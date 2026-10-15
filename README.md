@@ -29,7 +29,7 @@ google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.agent-browser
 npx @playwright/mcp --cdp-endpoint http://127.0.0.1:9222
 ```
 
-Set `CDP_URL` when the port is not `http://127.0.0.1:9222`.
+Set `CDP_URL` when the port is not `http://127.0.0.1:9222`. In that browser, turn off Settings › Passwords › Offer to save passwords, so no password stays in its profile.
 
 ## Use
 
@@ -70,7 +70,7 @@ box.example.com {
 
 What it does not protect against:
 
-- **An agent that looks before `wait` returns.** Anything that can run JavaScript in the tab can read an input's value in the second between typing and submitting.
+- **An agent that sets out to get it.** The agent drives the same browser, and usually has a shell on the same machine. It could read the field in the second before submit, read the request body (Playwright MCP's `browser_network_request` returns it), or swap the script. The promise is that the password never passes through the agent in normal use, not that a hostile agent cannot reach it.
 - **The tunnel.** With `--tunnel`, Cloudflare terminates TLS and could see values in transit. Use `--public` behind your own TLS if that matters.
 - **A phishing tab.** If a prompt injection sends the agent to a look-alike site, the page shows that site's real origin. Read it before you fill.
 

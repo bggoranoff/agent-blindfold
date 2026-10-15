@@ -361,8 +361,11 @@ function page(response, config) {
 const INPUTS = {
   username: `<label for="username">Email or username</label><input id="username" name="username" type="text"
     autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>`,
-  password: `<label for="password">Password</label><input id="password" name="password" type="password"
-    autocomplete="current-password" required>`,
+  password: `<label for="password">Password</label><div class="secret"><input id="password" name="password"
+    type="password" autocomplete="current-password" required><button type="button" class="eye" aria-label="Show password"
+    aria-pressed="false"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"
+    stroke-linecap="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/>
+    <circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg></button></div>`,
   code: `<label for="code">Verification code</label><input id="code" name="code" type="text" inputmode="numeric"
     autocomplete="one-time-code" required>`,
 };
@@ -379,6 +382,9 @@ label{display:block;font-size:14px;color:var(--muted);margin:16px 0 6px}
 input{width:100%;font:inherit;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg)}
 button{display:block;width:100%;font:inherit;font-weight:600;padding:13px;margin-top:20px;border:0;border-radius:10px;background:var(--fg);color:var(--bg)}
 button.quiet{background:none;color:var(--muted);margin-top:8px}[hidden]{display:none}
+.secret{position:relative}.secret input{padding-right:52px}
+.eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:flex;width:44px;margin:0;padding:10px;background:none;color:var(--muted)}
+.eye:not([aria-pressed=true]) .slash{display:none}
 </style>
 <main><h1>Sign in</h1><p class="sub">Your agent's browser will type this into</p><p class="host">{host}</p>
 <form>{inputs}<button>Sign in</button></form><button class="quiet" id="cancel">Cancel</button><p id="status" role="status"></p></main>
@@ -399,6 +405,13 @@ form.onsubmit = (event) => {
   send(location.pathname, body);
 };
 cancel.onclick = () => send(location.pathname + "/cancel", "{}");
+const eye = document.querySelector(".eye");
+if (eye) eye.onclick = () => {
+  const input = eye.previousElementSibling, show = input.type === "password";
+  input.type = show ? "text" : "password";
+  eye.setAttribute("aria-pressed", show);
+  eye.setAttribute("aria-label", show ? "Hide password" : "Show password");
+};
 </script>`;
 
 const { values: options, positionals: [command, argument] } = parseArgs({

@@ -40,4 +40,6 @@ It needs Node 22 and the Chromium you drive, reachable over its DevTools port: `
 - Never ask for a password or code in chat. If the user sends one anyway, don't type it. Point them to the page.
 - Never read back what the script typed: no reading a field's `value`, no screenshot of a revealed password.
 - Don't look at the page while `wait` runs. Until it returns, the page may still hold the password, and a snapshot would show it.
+- Never open the details or body of a request the sign-in sent, such as with `browser_network_request`. It holds the password.
+- If the browser offers to save the password, decline.
 - The page shows the user the exact origin the login goes to. If the tab moves to another site before they answer, nothing is typed: run `ask` again on the new page.
