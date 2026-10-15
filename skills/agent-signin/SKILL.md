@@ -15,13 +15,12 @@ Look at the page, then pick a row.
 
 | The page asks for | Command |
 |---|---|
-| Email or username and password, on one page or one after the other | `ask username,password` |
-| A verification or 2FA code | `ask code` |
+| An email, username, password or verification code box | `ask`. It finds the boxes the page shows now; when the site asks for the email first, ask again on the password page. |
 | Some characters of a password or memorable word, such as the 2nd, 5th and 7th | `ask password --characters 2,5,7`, or `secret` instead of `password` |
-| A PIN, security answer or memorable word | click into the field, then `ask secret --focused --label "<the page's name for it>"` |
-| A field the rows above miss, such as one inside an embedded frame | click into it, then `ask <field> --focused` |
+| A PIN, security answer or memorable word | click into the box, then `ask secret --focused --label "<the page's name for it>"` |
+| A box `ask` misses or gets wrong, such as one inside an embedded frame | click into it, then `ask <username, password or code> --focused` |
 | Clicking a link it emailed | `ask link` |
-| The browser's own login dialog, not a web page | `ask username,password --dialog <the URL you opened>` |
+| The browser's own login dialog, not a web page | `ask --dialog <the URL you opened>` |
 
 Add `--tab <part of the tab's URL>` when more than one tab is open.
 
@@ -38,10 +37,10 @@ The last line is `{"status": ..., "filled": [...], ...}`.
 
 - `filled`: look at the page.
   - Signed in: carry on.
-  - It asks for something more, such as a code: back to step 1.
-  - Wrong password, a field in `unused`, or `"cleared": true` with no error showing: back to step 1, and tell the user what the site said.
+  - It asks for something more, such as the password after the email, or a code: back to step 1.
+  - Wrong password, or `"cleared": true` with no error showing: back to step 1, and tell the user what the site said.
   - A CAPTCHA, a passkey or an approval in another app: ask the user to do it, then look again.
-- `failed`, `cancelled` or `expired`: tell the user the `reason` in one line and stop.
+- `failed`, `cancelled` or `expired`: tell the user the `reason` in one line and stop. If `ask` itself says what to do instead, such as clicking into a box, do that and ask again.
 
 ## Rules
 

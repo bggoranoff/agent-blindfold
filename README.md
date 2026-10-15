@@ -60,7 +60,7 @@ Codex also asks before it first uses the browser tool. Approve it then, or set `
 ## Use
 
 ```sh
-$ node signin.mjs ask username,password --tab linkedin.com --wait
+$ node signin.mjs ask --tab linkedin.com --wait
 {"id":"q3Zc1rT0","origin":"https://www.linkedin.com","fields":["username","password"],"status":"waiting","url":"http://127.0.0.1:53121/9fK…","expires":…}
 {"origin":"https://www.linkedin.com","fields":["username","password"],"status":"filled","filled":["username","password"],"unused":[]}
 ```
@@ -69,15 +69,14 @@ Without `--wait`, `ask` returns at once and `wait <id>` blocks until the user an
 
 | The page asks for | Command |
 |---|---|
-| Email or username and password, on one page or one after the other | `ask username,password` |
-| A verification or 2FA code, in one box or one box per digit | `ask code` |
+| An email, username, password or verification code box (a code may be one box per digit) | `ask` |
 | Some characters of a password or memorable word, such as the 2nd, 5th and 7th | `ask password --characters 2,5,7` (or `secret`) |
 | A PIN, security answer or memorable word | `ask secret --focused --label "Memorable word"` |
-| A field the script does not find on its own, such as one inside an embedded frame from another site | `ask <field> --focused` |
+| A box `ask` misses or gets wrong, such as one inside an embedded frame from another site | `ask <username, password or code> --focused` |
 | Clicking a link it emailed | `ask link` |
-| The browser's own login dialog (HTTP authentication) | `ask username,password --dialog <url>` |
+| The browser's own login dialog (HTTP authentication) | `ask --dialog <url>` |
 
-By default the script finds the fields itself. With `--focused`, the agent clicks into the field first and the script types there, after the same checks. For a site that asks for the email first, ask for both: the script types the email, submits, and types the password when the next page shows it. `"cleared": true` means the page still held a typed secret 10 seconds after submitting, so the script emptied the field.
+`ask` finds the boxes the page shows when it runs, and the user's page asks for exactly those, labelled in the site's own words. The script keeps DevTools references to those boxes and types into them and nowhere else: if one has gone or been swapped by the time the user answers, nothing is typed. A site that asks for the email first gets one page for the email and, once the password page shows, another for the password. With `--focused`, the agent clicks into the box first and the script uses that box instead. `"cleared": true` means the page still held a typed secret 10 seconds after submitting, so the script emptied the box.
 
 ### Local and remote agents
 
@@ -103,8 +102,8 @@ box.example.com {
 
 - **The agent never receives a value.** Values go from the page to the script's server process, which holds them in memory for one fill and then exits. Nothing it prints or writes holds them.
 - **Nothing is left in the page.** Page snapshots, Playwright MCP's among them, include what a password field holds. So the script submits with the form's own button and, if a typed secret is still in the page 10 seconds later, empties the field before the agent hears back.
-- **Values go only to the site the page names.** The tab or frame and its origin are pinned when `ask` runs, and the page shows that origin, and the page around it when the field sits in a frame from another site. The origin check and the typing run in one evaluation, so a navigation cannot land between them. A tab that moved gets nothing.
-- **A password goes only into a password field.** With `--focused`, a password is never typed into a field of another type, wherever the agent clicked.
+- **Values go only into the boxes the page named.** The boxes, their frame and its origin are pinned when `ask` runs, and the page shows that origin, and the page around it when the box sits in a frame from another site. The origin check and the typing run in one evaluation in an isolated world, so neither a navigation nor the page's own scripts can land between them. A tab that moved, or a box that was swapped, gets nothing.
+- **A password goes only into a password box.** A password is never typed into a box of another type, nor into a password box that has been switched to show its text.
 - **One link, one use.** The link carries a 256-bit token, works for one submission, and dies after 10 minutes (`--minutes`). The server listens on 127.0.0.1 only.
 - **The page loads nothing.** No external scripts, styles or images, and a CSP that allows only its own inline script and its own origin.
 
@@ -119,7 +118,7 @@ What it does not protect against:
 ## Limits
 
 - Passkeys, security keys and biometrics cannot be handed over. The user completes those in the agent's browser some other way.
-- Fields are found by heuristics (`autocomplete`, type, name, label). When they miss, the agent clicks into the field and adds `--focused`.
+- Boxes are found by heuristics (`autocomplete`, type, name, label). When they miss, or the page shows two password boxes, the agent clicks into the box and adds `--focused`.
 - A field inside a closed shadow root, or two levels deep in frames from other sites, is not reached.
 - A browser without a DevTools port, such as an extension-driven one, is not supported.
 
@@ -129,7 +128,7 @@ What it does not protect against:
 npm test
 ```
 
-Launches a headless Chrome (`$CHROME`, or the usual install paths) with a fresh profile on a random port, and runs each kind of login against local fixtures: two-step, moved tab, a form that ignores Enter, a form that never submits, a field in a frame from another site, a password refused by a text field, picked characters, the login dialog, and an emailed link.
+Launches a headless Chrome (`$CHROME`, or the usual install paths) with a fresh profile on a random port, and runs each kind of login against local fixtures: two-step, a swapped box, moved tab, a form that ignores Enter, a form that never submits, a box in a frame from another site, a password refused by a text box, picked characters, the login dialog, and an emailed link.
 
 ## License
 

@@ -22,7 +22,8 @@ const CHROME = CHROMES.find((path) => path && existsSync(path));
 const SKIP = { skip: !CHROME && "no Chromium" };
 const USERNAME = "ada@example.com";
 const PASSWORD = "correct-horse-battery-staple";
-const LOGIN = `<form method="post"><input type="email" name="identifier" autocomplete="username"><button>Next</button></form>`;
+const LOGIN = `<form method="post"><label>Work email <input type="email" name="identifier" autocomplete="username"></label>
+  <button>Next</button></form>`;
 const PASSWORD_PAGE = `<form method="post"><input type="password" name="secret"><button>Sign in</button></form>`;
 const DEAF_PAGE = `<form method="post"><input type="password" name="deaf" onkeydown="event.key === 'Enter' && event.preventDefault()">
   <button>Sign in</button></form>`;
@@ -47,7 +48,7 @@ function fixture() {
     let body = "";
     for await (const chunk of request) body += chunk;
     Object.assign(received, Object.fromEntries(new URLSearchParams(body)));
-    const route = routes[`${request.method} ${request.url}`] ?? [200, LOGIN];
+    const route = routes[`${request.method} ${request.url.split("?")[0]}`] ?? [200, LOGIN];
     const [status, html, headers] = typeof route === "function" ? route(request) : route;
     response.writeHead(status, { "Content-Type": "text/html", ...headers }).end(html);
   });
@@ -60,7 +61,7 @@ async function run(...args) {
   const env = { ...process.env, BROWSER: "true" };
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [SCRIPT, ...args, "--cdp", cdp], { env })
     .catch((error) => error);
-  return { output: stdout + stderr, result: JSON.parse(stdout) };
+  return { output: stdout + stderr, result: stdout ? JSON.parse(stdout) : null };
 }
 
 async function answer(asked, values) {
@@ -119,23 +120,42 @@ after(async () => {
   if (profile) rmSync(profile, { recursive: true, force: true });
 });
 
-test("a two-step login gets the username, then the password, and no output holds either", SKIP, async () => {
-  await openTab(`${site.url}/login`);
-  const asked = await run("ask", "username,password", "--tab", `${site.url}/login`);
-  assert.equal(asked.result.status, "waiting");
-  assert.equal(asked.result.origin, site.url);
-
-  const page = await (await fetch(asked.result.url)).text();
+test("a two-step login asks for the email, then the password, each in the page's own words, and no output holds either", SKIP, async () => {
+  const tab = await openTab(`${site.url}/login`);
+  const first = await run("ask", "--tab", `${site.url}/login`);
+  assert.equal(first.result.status, "waiting");
+  assert.equal(first.result.origin, site.url);
+  assert.deepEqual(first.result.fields, ["username"]);
+  const page = await (await fetch(first.result.url)).text();
   assert.match(page, new RegExp(new URL(site.url).host));
-  const reply = await fetch(asked.result.url, { method: "POST", body: JSON.stringify({ username: USERNAME, password: PASSWORD }) });
-  const waited = await run("wait", asked.result.id);
+  assert.match(page, /Work email/);
+  assert.doesNotMatch(page, /name="password"/);
+  const reply = await fetch(first.result.url, { method: "POST", body: JSON.stringify({ username: USERNAME }) });
+  const firstWaited = await run("wait", first.result.id);
+  assert.equal(firstWaited.result.status, "filled");
 
-  assert.equal(waited.result.status, "filled");
-  assert.deepEqual(waited.result.filled, ["username", "password"]);
+  await until(async () => (await evaluate(tab, "location.pathname")) === "/password");
+  const second = await run("ask", "--tab", `${site.url}/password`);
+  assert.deepEqual(second.result.fields, ["password"]);
+  const secondWaited = await answer(second, { password: PASSWORD });
+
+  assert.equal(secondWaited.result.status, "filled");
   await until(() => site.received.secret);
   assert.deepEqual(site.received, { identifier: USERNAME, secret: PASSWORD });
-  const everything = asked.output + waited.output + (await reply.text());
+  const everything = first.output + firstWaited.output + second.output + secondWaited.output + (await reply.text());
   assert.ok(!everything.includes(PASSWORD) && !everything.includes(USERNAME));
+});
+
+test("a box the page swapped out after the user was asked gets nothing typed, nor does its stand-in", SKIP, async () => {
+  const tab = await openTab(`${site.url}/password?swapped`);
+  const asked = await run("ask", "--tab", "?swapped");
+  await evaluate(tab, `document.querySelector("input").replaceWith(Object.assign(document.createElement("input"), { type: "password" }))`);
+
+  const waited = await answer(asked, { password: PASSWORD });
+
+  assert.equal(waited.result.status, "failed");
+  assert.match(waited.result.reason, /page changed/);
+  assert.equal(await evaluate(tab, "document.querySelector('input').value"), "");
 });
 
 test("a tab that moved to another origin gets nothing typed", SKIP, async () => {
@@ -153,7 +173,7 @@ test("a tab that moved to another origin gets nothing typed", SKIP, async () => 
 
 test("a form that ignores Enter is sent with its own button", SKIP, async () => {
   await openTab(`${site.url}/deaf`);
-  const asked = await run("ask", "password", "--tab", "/deaf");
+  const asked = await run("ask", "--tab", "/deaf");
   const waited = await answer(asked, { password: PASSWORD });
 
   assert.equal(waited.result.status, "filled");
@@ -190,9 +210,9 @@ test("a password never goes into a field that is not a password field, but a sec
   const tab = await openTab(`${site.url}/word`);
   await evaluate(tab, "document.querySelector('input').focus()");
 
-  const refused = await answer(await run("ask", "password", "--focused", "--tab", "/word"), { password: PASSWORD });
-  assert.equal(refused.result.status, "failed");
-  assert.equal(await evaluate(tab, "document.querySelector('input').value"), "");
+  const refused = await run("ask", "password", "--focused", "--tab", "/word");
+  assert.equal(refused.result, null);
+  assert.match(refused.output, /not a password box/);
 
   const asked = await run("ask", "secret", "--focused", "--label", "Memorable <word>", "--tab", "/word");
   assert.match(await (await fetch(asked.result.url)).text(), /Memorable &#60;word&#62;/);
@@ -217,7 +237,7 @@ test("the browser's own login dialog is answered, for the named site only", SKIP
   site.routes["GET /basic"] = (request) => (request.headers.authorization === expected
     ? [200, "<h1>Welcome</h1>"] : [401, "Locked", { "WWW-Authenticate": 'Basic realm="test"' }]);
   const tab = await openTab(`${site.url}/basic`);
-  const asked = await run("ask", "username,password", "--dialog", `${site.url}/basic`, "--tab", "/basic");
+  const asked = await run("ask", "--dialog", `${site.url}/basic`, "--tab", "/basic");
   const waited = await answer(asked, { username: USERNAME, password: PASSWORD });
 
   assert.equal(waited.result.status, "filled");

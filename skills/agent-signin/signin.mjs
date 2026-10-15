@@ -13,28 +13,32 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const USAGE = `Usage:
-  signin.mjs ask <fields> [--tab <text>] [--focused] [--characters <n,n,...>] [--label <text>] [--dialog <url>]
-                 [--wait] [--cdp <url>] [--public <https url> | --tunnel] [--port <n>] [--minutes <n>]
+  signin.mjs ask [<fields>] [--tab <text>] [--focused] [--characters <n,n,...>] [--label <text>] [--wait]
+                 [--cdp <url>] [--public <https url> | --tunnel] [--port <n>] [--minutes <n>]
+  signin.mjs ask link [--tab <text>] [--wait] ...
+  signin.mjs ask --dialog <url> [--tab <text>] [--wait] ...
   signin.mjs wait <id>
 
-<fields> is a comma list of username, password, code, secret and link.`;
+Without <fields>, ask finds the login boxes the page shows now. <fields> is a comma list of username, password,
+code and secret, to ask for only those.`;
 const SELF = fileURLToPath(import.meta.url);
 const FIELDS = ["username", "password", "code", "secret", "link"];
 // Each rule is a combination of fields and options that cannot work, and what to do instead.
 const RULES = [
   [(fields) => fields.includes("link") && fields.length > 1, "Ask for link on its own."],
-  [(fields, o) => (o.focused || o.characters) && fields.length > 1, "--focused and --characters take one field."],
+  [(fields, o) => (o.focused || o.characters) && fields.length !== 1, "--focused and --characters take one field, such as ask password --focused."],
   [(fields, o) => o.characters && !/^\d+(,\d+)*$/.test(o.characters), "--characters takes positions, such as 2,5,7."],
   [(fields, o) => o.characters && !["password", "secret"].includes(fields[0]), "--characters works with password or secret."],
-  [(fields, o) => fields.includes("secret") && !o.focused && !o.characters, "Click into the field, then ask for secret with --focused."],
-  [(fields, o) => o.dialog && fields.join() !== "username,password", "--dialog takes username,password."],
+  [(fields, o) => fields.includes("secret") && !o.focused && !o.characters, "Click into the box, then ask for secret with --focused."],
+  [(fields, o) => o.dialog && fields.length && fields.join() !== "username,password", "--dialog asks for the username and password itself."],
 ];
+const LABELS = { username: "Email or username", password: "Password", code: "Verification code", secret: "Answer", link: "Sign-in link from your email" };
 const STATE = join(tmpdir(), "agent-signin");
 const PUBLIC_PORT = 8769;
 const POLL_MS = 100;
-const NEXT_FIELD_MS = 15000;
 const SETTLE_MS = 10000;
-// Sites check a field when it loses focus and hold back a submit until that check is done, so a submit waits for the
+const LOAD_MS = 15000;
+// Sites check a box when it loses focus and hold back a submit until that check is done, so a submit waits for the
 // page's requests to go quiet, for at most as long as a person's pause.
 const PAUSE_MS = 1000;
 const QUIET_MS = 150;
@@ -42,75 +46,73 @@ const OPENERS = { darwin: "open", win32: "explorer" };
 const CHROMIUM = /chrome|chromium|edge|brave|vivaldi/i;
 const WINDOW = ["--window-size=440,640"];
 
-// Shared by the functions below. Each runs in the frame, where the origin check and the typing share one evaluation,
-// so a navigation cannot slip between them.
-const IN_PAGE = `
-  if (location.origin !== origin) return { moved: location.origin };
+// Finds the boxes to ask for, when the user is asked, and keeps them in globalThis.wired for DevTools references.
+const DETECT = `(how, wanted, positions) => {
   // Password managers' and sites' helper fields render but are aria-hidden; no person can see or reach them.
   const shown = (e) => e.getClientRects().length && !e.disabled && !e.readOnly && !e.closest("[aria-hidden=true]")
     && getComputedStyle(e).visibility !== "hidden" && !["hidden", "submit", "button", "checkbox", "radio"].includes(e.type);
   const inputs = [...document.querySelectorAll("input")].filter(shown);
-  const type = (e, text) => {
+  const hint = (e) => [e.name, e.id, e.placeholder, e.getAttribute("aria-label"), e.autocomplete].join(" ").toLowerCase();
+  const label = (e) => (e.labels?.[0]?.innerText || e.getAttribute("aria-label") || e.placeholder || "").trim().slice(0, 80);
+  const find = () => {
+    const passwords = inputs.filter((e) => e.type === "password");
+    if (passwords.length > 1) return { reason: "The page shows more than one password box. Click into the right one and ask with --focused." };
+    const [password] = passwords;
+    const boxes = inputs.filter((e) => e.maxLength === 1);
+    const code = inputs.find((e) => e.autocomplete === "one-time-code")
+      || inputs.find((e) => e !== password && /otp|code|pin|verif|2fa|mfa|token/.test(hint(e)));
+    const beforePassword = inputs.slice(0, Math.max(inputs.indexOf(password), 0))
+      .filter((e) => ["text", "email", "tel"].includes(e.type));
+    const username = inputs.find((e) => /username|email/.test(e.autocomplete)) || inputs.find((e) => e.type === "email")
+      || inputs.find((e) => e !== code && e !== password && /user|email|login|account|identifier/.test(hint(e)))
+      || beforePassword.pop();
+    const all = { username: username && [username], password: password && [password], code: boxes.length >= 4 ? boxes : code && [code] };
+    // A code box only counts on its own page, so a sign-in form with a stray "code" box asks for no code.
+    const kinds = wanted.length ? wanted : username || password ? ["username", "password"] : ["code"];
+    const missing = wanted.filter((kind) => !all[kind]);
+    if (missing.length) return { reason: \`No \${missing.join(" or ")} box shows on this page.\` };
+    const fields = kinds.filter((kind) => all[kind]).map((kind) => ({ kind, boxes: all[kind] }));
+    return fields.length ? fields : { reason: "No login box shows on this page. Click into the box and ask with --focused." };
+  };
+  const focused = () => {
+    const box = document.activeElement;
+    if (!inputs.includes(box)) return { reason: "No box is selected. Click into the box, then ask again." };
+    if (wanted[0] === "password" && box.type !== "password") return { reason: "The selected box is not a password box." };
+    return [{ kind: wanted[0], boxes: [box] }];
+  };
+  const characters = () => {
+    const boxes = [inputs.filter((e) => e.maxLength === 1), inputs.filter((e) => e.type === "password")]
+      .find((list) => list.length === positions.length);
+    return boxes ? [{ kind: wanted[0], boxes }] : { reason: \`No \${positions.length} boxes for the characters show on this page.\` };
+  };
+  const picked = { find, focused, characters }[how]();
+  if (picked.reason) return picked;
+  globalThis.wired = picked.flatMap((field) => field.boxes);
+  const fields = picked.map(({ kind, boxes }) => ({ kind, count: boxes.length, label: boxes.length > 1 ? "" : label(boxes[0]) }));
+  return { origin: location.origin, fields };
+}`;
+// Types into the boxes found when the user was asked, only if the frame is still on that site and every box is still in
+// the page; a password goes only into a box that still hides it.
+const TYPE = `function (origin, texts, kinds, ...boxes) {
+  if (location.origin !== origin) return { moved: location.origin };
+  if (!boxes.every((e) => e.isConnected)) return { reason: "The page changed after you were asked, so nothing was typed." };
+  if (boxes.some((e, i) => kinds[i] === "password" && e.type !== "password")) {
+    return { reason: "The password box no longer hides what is typed, so nothing was typed." };
+  }
+  boxes.forEach((e, i) => {
     e.focus();
     e.select();
-    if (document.execCommand("insertText", false, text)) return;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, text);
+    if (document.execCommand("insertText", false, texts[i])) return;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, texts[i]);
     e.dispatchEvent(new Event("input", { bubbles: true }));
     e.dispatchEvent(new Event("change", { bubbles: true }));
-  };`;
-// Finds the fields the page shows and types what it can.
-const FIND = `(origin, values) => {${IN_PAGE}
-  const hint = (e) => [e.name, e.id, e.placeholder, e.getAttribute("aria-label"), e.autocomplete].join(" ").toLowerCase();
-  const password = inputs.find((e) => e.type === "password");
-  const boxes = inputs.filter((e) => e.maxLength === 1);
-  const code = inputs.find((e) => e.autocomplete === "one-time-code")
-    || inputs.find((e) => e !== password && /otp|code|pin|verif|2fa|mfa|token/.test(hint(e)));
-  const beforePassword = inputs.slice(0, Math.max(inputs.indexOf(password), 0))
-    .filter((e) => ["text", "email", "tel"].includes(e.type));
-  const username = inputs.find((e) => /username|email/.test(e.autocomplete)) || inputs.find((e) => e.type === "email")
-    || inputs.find((e) => e !== code && e !== password && /user|email|login|account|identifier/.test(hint(e)))
-    || beforePassword.pop();
-  const typed = [];
-  const put = (kind, e) => {
-    if (!e || !values[kind]) return;
-    type(e, values[kind]);
-    typed.push(kind);
-  };
-  put("username", username);
-  put("password", password);
-  const split = values.code && boxes.length >= 4 && boxes.length === values.code.length;
-  if (!split) put("code", code);
-  if (split) {
-    boxes.forEach((e, i) => type(e, values.code[i]));
-    typed.push("code");
-  }
-  return { typed };
+  });
+  return {};
 }`;
-// Types into the field the agent clicked into; a password goes only into a password field.
-const FOCUSED = `(origin, values) => {${IN_PAGE}
-  const [[kind, text]] = Object.entries(values);
-  const field = document.activeElement;
-  if (!inputs.includes(field)) return { reason: "The field the agent picked is no longer selected." };
-  if (kind === "password" && field.type !== "password") return { reason: "The field the agent picked is not a password field." };
-  type(field, text);
-  return { typed: [kind] };
-}`;
-// Types only the characters a site asks for, such as the 2nd, 5th and 7th, one per box.
-const CHARACTERS = `(origin, values, positions) => {${IN_PAGE}
-  const [[kind, text]] = Object.entries(values);
-  const picked = positions.map((n) => text[n - 1]);
-  if (picked.includes(undefined)) return { reason: "The answer is shorter than the characters asked for." };
-  const boxes = [inputs.filter((e) => e.maxLength === 1), inputs.filter((e) => e.type === "password")]
-    .find((list) => list.length === picked.length);
-  if (!boxes) return { reason: \`No \${picked.length} boxes for the characters showed.\` };
-  boxes.forEach((e, i) => type(e, picked[i]));
-  return { typed: [kind] };
-}`;
-// Clicks the submit button of the form holding the value, as some sites ignore a synthetic Enter.
-const SUBMIT = `(origin, value) => {
+// Clicks the submit button of the box's form, as some sites ignore a synthetic Enter; false when there is none to click.
+const SUBMIT = `function (origin) {
   if (location.origin !== origin) return true;
-  const field = [document.activeElement, ...document.querySelectorAll("input")].find((e) => e?.value === value);
-  const button = field?.form && [...field.form.elements].find((e) => e.type === "submit" && !e.disabled);
+  const button = this.form && [...this.form.elements].find((e) => e.type === "submit" && !e.disabled);
   button?.click();
   return Boolean(button);
 }`;
@@ -121,14 +123,14 @@ const HELD = `(origin, secrets, empty) => {
   if (empty) held.forEach((e) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, ""));
   return held.length;
 }`;
-const PROBE = `() => ({ origin: location.origin, active: document.activeElement?.tagName === "INPUT", focus: document.hasFocus() })`;
+const PROBE = `() => ({ active: document.activeElement?.tagName === "INPUT", focus: document.hasFocus() })`;
 
 function fail(message) {
   console.error(message);
   process.exit(2);
 }
 
-const failed = (reason, filled = []) => ({ status: "failed", reason, filled });
+const failed = (reason) => ({ status: "failed", reason, filled: [] });
 
 function readState(id) {
   const path = join(STATE, `${id}.json`);
@@ -160,7 +162,7 @@ async function pickTab(cdp, text = "") {
 }
 
 async function ask(fields, options) {
-  const wanted = fields.split(",");
+  const wanted = fields?.split(",") ?? [];
   if (!wanted.every((field) => FIELDS.includes(field))) fail(USAGE);
   const broken = RULES.find(([breaks]) => breaks(wanted, options));
   if (broken) fail(broken[1]);
@@ -168,13 +170,14 @@ async function ask(fields, options) {
   const tab = await pickTab(options.cdp, options.tab);
   const top = new URL(options.dialog ?? tab.url).origin;
   if (!/^https?:/.test(top)) fail(`The tab is on ${tab.url}, not a website.`);
-  const frame = options.focused ? await focusedFrame(tab) : { id: tab.id, origin: top };
+  const kind = wanted.includes("link") ? "link" : options.dialog ? "dialog" : "boxes";
+  const target = await TARGETS[kind](tab, wanted, options);
   const id = randomBytes(6).toString("base64url");
   const config = {
-    id, origin: frame.origin, top, fields: wanted, frame: frame.id, focused: options.focused, label: options.label,
-    characters: options.characters?.split(",").map(Number), dialog: options.dialog, cdp: options.cdp, target: tab.id,
-    token: randomBytes(32).toString("base64url"), public: options.public, tunnel: options.tunnel,
-    minutes: Number(options.minutes), port: Number(options.port ?? (options.public ? PUBLIC_PORT : 0)),
+    id, top, ...target, label: options.label, characters: options.characters?.split(",").map(Number),
+    dialog: options.dialog, cdp: options.cdp, target: tab.id, token: randomBytes(32).toString("base64url"),
+    public: options.public, tunnel: options.tunnel, minutes: Number(options.minutes),
+    port: Number(options.port ?? (options.public ? PUBLIC_PORT : 0)),
   };
   // The token goes over stdin rather than argv, where `ps` would show it.
   const server = spawn(process.execPath, [SELF, "serve"], { detached: true, stdio: ["pipe", "ignore", "ignore"] });
@@ -187,15 +190,46 @@ async function ask(fields, options) {
   if (options.wait) await wait(id);
 }
 
-// The frame where the agent left the cursor: the tab itself, or a frame inside it, even one from another site.
-async function focusedFrame(tab) {
+// What each kind of ask fills: the boxes the page shows, a link to open, or the browser's own login dialog.
+const TARGETS = {
+  link: (tab) => ({ frame: tab.id, origin: new URL(tab.url).origin, fields: [{ kind: "link" }] }),
+  dialog: (tab, wanted, options) => ({
+    frame: tab.id, origin: new URL(options.dialog).origin, fields: [{ kind: "username" }, { kind: "password" }],
+  }),
+  boxes: wire,
+};
+
+// Finds the boxes to fill now, in the tab or in the frame the agent clicked into, and keeps DevTools references to
+// them, so the fill types into these boxes and nowhere else.
+async function wire(tab, wanted, options) {
   const browser = await connect(tab.webSocketDebuggerUrl);
+  const frame = options.focused ? await focusedFrame(browser) : { id: tab.id };
+  const contextId = await world(browser, frame);
+  const how = options.characters ? "characters" : options.focused ? "focused" : "find";
+  const positions = options.characters?.split(",").map(Number);
+  const args = [how, wanted, positions].map((arg) => JSON.stringify(arg)).join(", ");
+  const found = await run(browser, frame, contextId, `(${DETECT})(${args})`);
+  if (!found) fail("The page did not answer. Try again once it has loaded.");
+  if (found.reason) fail(found.reason);
+  const total = found.fields.reduce((sum, field) => sum + field.count, 0);
+  const nodes = await Promise.all(Array.from({ length: total }, (_, i) => backendNode(browser, frame, contextId, i)));
+  browser.close();
+  let next = 0;
+  const fields = found.fields.map(({ kind, count, label }) => {
+    const boxes = nodes.slice(next, next + count);
+    next += count;
+    return { kind, label: (kind === "secret" && options.label) || label, boxes };
+  });
+  return { frame: frame.id, origin: found.origin, fields };
+}
+
+// The frame where the agent left the cursor: the tab itself, or a frame inside it, even one from another site.
+async function focusedFrame(browser) {
   const all = await frames(browser);
   const probes = await Promise.all(all.map(async (frame) => ({ ...frame, ...(await evaluate(browser, frame, PROBE)) })));
-  browser.close();
   const typing = probes.filter((probe) => probe.active);
   const picked = typing.length > 1 ? typing.filter((probe) => probe.focus) : typing;
-  if (picked.length !== 1) fail("No field is selected. Click into the field, then ask again with --focused.");
+  if (picked.length !== 1) fail("No box is selected. Click into the box, then ask again with --focused.");
   return picked[0];
 }
 
@@ -214,14 +248,33 @@ async function frames(browser) {
 
 const flatten = (tree) => (tree ? [tree.frame, ...(tree.childFrames ?? []).flatMap(flatten)] : []);
 
-// Runs a function in a fresh isolated world of the frame, out of reach of the page's own scripts.
-async function evaluate(browser, frame, source, ...args) {
-  const world = await browser.send("Page.createIsolatedWorld", { frameId: frame.id, worldName: "agent-signin" }, frame.sessionId);
-  if (!world.executionContextId) return undefined;
-  const expression = `(${source})(${args.map((arg) => JSON.stringify(arg)).join(", ")})`;
-  const params = { expression, contextId: world.executionContextId, returnByValue: true };
-  const { result } = await browser.send("Runtime.evaluate", params, frame.sessionId);
+// A fresh isolated world in the frame, where the page's own scripts cannot see or change what runs.
+async function world(browser, frame) {
+  const params = { frameId: frame.id, worldName: "agent-signin" };
+  return (await browser.send("Page.createIsolatedWorld", params, frame.sessionId)).executionContextId;
+}
+
+async function run(browser, frame, contextId, expression) {
+  if (!contextId) return undefined;
+  const { result } = await browser.send("Runtime.evaluate", { expression, contextId, returnByValue: true }, frame.sessionId);
   return result?.value;
+}
+
+async function evaluate(browser, frame, source, ...args) {
+  const contextId = await world(browser, frame);
+  return run(browser, frame, contextId, `(${source})(${args.map((arg) => JSON.stringify(arg)).join(", ")})`);
+}
+
+// A reference to a wired box that stays valid across DevTools connections for as long as the box exists.
+async function backendNode(browser, frame, contextId, index) {
+  const { result } = await browser.send("Runtime.evaluate", { expression: `globalThis.wired[${index}]`, contextId }, frame.sessionId);
+  const { node } = await browser.send("DOM.describeNode", { objectId: result.objectId }, frame.sessionId);
+  return node.backendNodeId;
+}
+
+async function resolve(browser, frame, contextId, backendNodeId) {
+  const { object } = await browser.send("DOM.resolveNode", { backendNodeId, executionContextId: contextId }, frame.sessionId);
+  return object?.objectId;
 }
 
 // A Chromium default browser shows the page as a small app window, which the page can close itself.
@@ -235,17 +288,17 @@ function openPage(url) {
 
 const DEFAULT_CHROMIUM = {
   darwin: (url) => {
-    const handlers = run("defaults", ["read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"]);
+    const handlers = shell("defaults", ["read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"]);
     const bundle = handlers.match(/LSHandlerRoleAll = "?([\w.-]+)"?;\s*LSHandlerURLScheme = https;/)?.[1];
     return CHROMIUM.test(bundle) && ["open", "-nb", bundle, "--args", `--app=${url}`, ...WINDOW];
   },
   linux: (url) => {
-    const name = run("xdg-settings", ["get", "default-web-browser"]).trim().replace(/\.desktop$/, "");
+    const name = shell("xdg-settings", ["get", "default-web-browser"]).trim().replace(/\.desktop$/, "");
     return CHROMIUM.test(name) && [name, `--app=${url}`, ...WINDOW];
   },
 };
 
-function run(command, args) {
+function shell(command, args) {
   try {
     return execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   } catch {
@@ -271,7 +324,8 @@ async function wait(id) {
 
 async function serve() {
   const config = JSON.parse(readFileSync(0, "utf8"));
-  const save = (state) => writeState(config.id, { origin: config.origin, fields: config.fields, ...state });
+  const kinds = config.fields.map((field) => field.kind);
+  const save = (state) => writeState(config.id, { origin: config.origin, fields: kinds, ...state });
   let tunnel, over;
   const finish = (state) => {
     if (over) return;
@@ -336,8 +390,8 @@ function handler(config, finish) {
     if (route === "POST /cancel" && !busy) return reply(response, 200, "Cancelled. Nothing was typed.", { status: "cancelled" });
     if (route !== "POST " || busy) return reply(response, 404, "This link is no longer open.");
     const sent = await json(request).catch(() => ({}));
-    const values = Object.fromEntries(config.fields.filter((f) => sent[f]).map((f) => [f, String(sent[f])]));
-    if (!Object.keys(values).length) return reply(response, 400, "Fill in the fields first.");
+    const values = Object.fromEntries(config.fields.filter((f) => sent[f.kind]).map((f) => [f.kind, String(sent[f.kind])]));
+    if (Object.keys(values).length < config.fields.length) return reply(response, 400, "Fill in every box first.");
     // Checked again after the await and set before the next one, so two POSTs can never both fill.
     if (busy) return reply(response, 404, "This link is no longer open.");
     busy = true;
@@ -347,7 +401,7 @@ function handler(config, finish) {
 }
 
 function message(config, result) {
-  if (result.status !== "filled") return `Nothing more was typed: ${result.reason}`;
+  if (result.status !== "filled") return `Stopped. ${result.reason}`;
   if (result.filled.includes("link")) return "Opened the link in your agent's browser.";
   const names = result.filled.map((field) => (field === "secret" ? "answer" : field));
   return `Typed your ${names.join(" and ")} into ${new URL(config.origin).host}.`;
@@ -357,39 +411,43 @@ async function fill(config, values) {
   const tab = (await pages(config.cdp)).find((target) => target.id === config.target);
   if (!tab) return failed("The browser tab is gone.");
   const browser = await connect(tab.webSocketDebuggerUrl);
-  const mode = config.dialog ? answerDialog : values.link ? openLink : typeFields;
+  const mode = config.dialog ? answerDialog : values.link ? openLink : typeWired;
   return mode(browser, config, values).finally(browser.close);
 }
 
-async function typeFields(browser, config, values) {
+// What goes into one box of a field: the whole answer, one digit of a split code, or one picked character.
+function piece(field, text, index, positions) {
+  if (positions) return text[positions[index] - 1];
+  return field.boxes.length > 1 ? text[index] : text;
+}
+
+async function typeWired(browser, config, values) {
   const frame = (await frames(browser)).find((candidate) => candidate.id === config.frame);
-  if (!frame) return failed("The frame with the field is gone.");
-  const how = config.characters ? CHARACTERS : config.focused ? FOCUSED : FIND;
+  if (!frame) return failed("The frame with the boxes is gone.");
+  const here = await evaluate(browser, frame, "() => location.origin");
+  if (here !== config.origin) return failed(`The page left ${config.origin} for ${here}.`);
+  const plan = config.fields.flatMap((field) => field.boxes.map((node, i) => ({
+    node, kind: config.characters ? "character" : field.kind, text: piece(field, values[field.kind], i, config.characters),
+  })));
+  if (plan.some((box) => box.text === undefined)) return failed("The answer is shorter than the boxes it has to fill.");
   const quiet = await requests(browser);
-  const lastOf = (kind) => (config.characters ? values[kind][config.characters.at(-1) - 1] : values[kind]);
-  const filled = [];
-  let left = Object.keys(values);
-  let deadline = Date.now() + NEXT_FIELD_MS;
-  // Type what the frame shows, submit, and wait for the next step to show the rest (identifier-first logins).
-  while (left.length && Date.now() < deadline) {
-    const only = Object.fromEntries(left.map((field) => [field, values[field]]));
-    const outcome = (await evaluate(browser, frame, how, config.origin, only, config.characters)) ?? { typed: [] };
-    if (outcome.moved) return failed(`The page left ${config.origin} for ${outcome.moved}.`, filled);
-    if (outcome.reason) return failed(outcome.reason, filled);
-    if (!outcome.typed.length) {
-      await sleep(2 * POLL_MS);
-      continue;
-    }
-    filled.push(...outcome.typed);
-    left = left.filter((field) => !outcome.typed.includes(field));
-    if (outcome.typed.length > 1) await quiet();
-    await submit(browser, frame, config.origin, lastOf(outcome.typed.at(-1)));
-    deadline = Date.now() + NEXT_FIELD_MS;
-  }
-  if (!filled.length) return failed(`No ${left.join(" or ")} field showed on ${config.origin}.`);
-  const secrets = config.characters?.map((n) => values[filled[0]][n - 1]) ?? [values.password, values.code, values.secret];
-  const cleared = await settle(browser, frame, config.origin, secrets.filter(Boolean));
-  return { status: "filled", filled, unused: left, ...(cleared && { cleared: true }) };
+  const contextId = await world(browser, frame);
+  const boxes = await Promise.all(plan.map((box) => resolve(browser, frame, contextId, box.node)));
+  if (boxes.includes(undefined)) return failed("The page changed after you were asked, so nothing was typed.");
+  const args = [config.origin, plan.map((box) => box.text), plan.map((box) => box.kind)].map((value) => ({ value }));
+  const params = { functionDeclaration: TYPE, executionContextId: contextId, returnByValue: true };
+  const { result } = await browser.send("Runtime.callFunctionOn", {
+    ...params, arguments: [...args, ...boxes.map((objectId) => ({ objectId }))],
+  }, frame.sessionId);
+  const outcome = result?.value;
+  if (!outcome) return failed("The page changed after you were asked, so nothing was typed.");
+  if (outcome.moved) return failed(`The page left ${config.origin} for ${outcome.moved}.`);
+  if (outcome.reason) return failed(outcome.reason);
+  if (config.fields.length > 1) await quiet();
+  await submit(browser, frame, config.origin, boxes.at(-1));
+  const secrets = plan.filter((box) => box.kind !== "username").map((box) => box.text);
+  const cleared = await settle(browser, frame, config.origin, secrets);
+  return { status: "filled", filled: config.fields.map((field) => field.kind), ...(cleared && { cleared: true }) };
 }
 
 // Tracks the page's requests in flight; the function it returns waits until none has run for a moment.
@@ -407,7 +465,7 @@ async function requests(browser) {
   };
 }
 
-// Page snapshots show what a password field holds, so nothing typed may still sit in the page when the agent looks.
+// Page snapshots show what a password box holds, so nothing typed may still sit in the page when the agent looks.
 async function settle(browser, frame, origin, secrets) {
   for (const deadline = Date.now() + SETTLE_MS; Date.now() < deadline; await sleep(POLL_MS)) {
     if (!((await evaluate(browser, frame, HELD, origin, secrets, false)) ?? 1)) return false;
@@ -415,8 +473,11 @@ async function settle(browser, frame, origin, secrets) {
   return Boolean(await evaluate(browser, frame, HELD, origin, secrets, true));
 }
 
-async function submit(browser, frame, origin, value) {
-  if (await evaluate(browser, frame, SUBMIT, origin, value)) return;
+// Presses Enter only when the box's form has no button to click; a page that already moved on gets nothing.
+async function submit(browser, frame, origin, box) {
+  const params = { functionDeclaration: SUBMIT, objectId: box, arguments: [{ value: origin }], returnByValue: true };
+  const { result } = await browser.send("Runtime.callFunctionOn", params, frame.sessionId);
+  if (result?.value !== false) return;
   const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
   await browser.send("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
   await browser.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
@@ -427,7 +488,7 @@ async function openLink(browser, config, values) {
   const url = URL.parse(values.link);
   if (!["http:", "https:"].includes(url?.protocol)) return failed("That is not a web link.");
   await browser.send("Page.navigate", { url: url.href });
-  return { status: "filled", filled: ["link"], unused: [] };
+  return { status: "filled", filled: ["link"] };
 }
 
 // Answers the browser's own login dialog (HTTP authentication), only for the origin the page named.
@@ -445,9 +506,9 @@ async function answerDialog(browser, config, values) {
   await browser.send("Page.enable");
   const loaded = new Promise((resolve) => browser.on("Page.loadEventFired", resolve));
   await browser.send("Page.navigate", { url: config.dialog });
-  await Promise.race([loaded, sleep(NEXT_FIELD_MS)]);
+  await Promise.race([loaded, sleep(LOAD_MS)]);
   await browser.send("Fetch.disable");
-  if (asked === 1) return { status: "filled", filled: ["username", "password"], unused: [] };
+  if (asked === 1) return { status: "filled", filled: ["username", "password"] };
   return failed(asked ? "The site turned that username and password down." : `${config.dialog} did not ask for a login.`);
 }
 
@@ -480,14 +541,15 @@ function page(response, config) {
   const nonce = randomBytes(16).toString("base64");
   const host = new URL(config.origin).host;
   const top = new URL(config.top).host;
-  const hint = config.characters && `<p class="sub">Only characters ${config.characters.join(", ")} are typed.</p>`;
+  const link = config.fields[0].kind === "link";
+  const hint = config.characters ? `<p class="sub">Only characters ${config.characters.join(", ")} are typed.</p>` : "";
   const parts = {
     nonce,
     host,
-    sub: config.fields.includes("link") ? "Your agent's browser will open it, signing in to" : "Your agent's browser will type this into",
+    sub: link ? "Your agent's browser will open it, signing in to" : "Your agent's browser will type this into",
     inside: top === host ? "" : `<p class="sub">inside ${top}</p>`,
-    inputs: config.fields.map((field) => INPUTS[field](config)).join("") + (hint || ""),
-    button: config.fields.includes("link") ? "Open link" : "Sign in",
+    inputs: config.fields.map((field) => INPUTS[field.kind](escapeHtml(field.label || LABELS[field.kind]))).join("") + hint,
+    button: link ? "Open link" : "Sign in",
   };
   response.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
@@ -511,13 +573,13 @@ const hidden = (name, label, autocomplete) => `<label for="${name}">${label}</la
   name="${name}" type="password" autocomplete="${autocomplete}" required>${EYE}</div>`;
 
 const INPUTS = {
-  username: () => `<label for="username">Email or username</label><input id="username" name="username" type="text"
+  username: (label) => `<label for="username">${label}</label><input id="username" name="username" type="text"
     autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>`,
-  password: () => hidden("password", "Password", "current-password"),
-  code: () => `<label for="code">Verification code</label><input id="code" name="code" type="text" inputmode="numeric"
+  password: (label) => hidden("password", label, "current-password"),
+  code: (label) => `<label for="code">${label}</label><input id="code" name="code" type="text" inputmode="numeric"
     autocomplete="one-time-code" required>`,
-  secret: (config) => hidden("secret", escapeHtml(config.label ?? "Answer"), "off"),
-  link: () => `<label for="link">Sign-in link from your email</label><input id="link" name="link" type="url"
+  secret: (label) => hidden("secret", label, "off"),
+  link: (label) => `<label for="link">${label}</label><input id="link" name="link" type="url"
     autocapitalize="none" autocorrect="off" spellcheck="false" required>`,
 };
 
@@ -581,5 +643,5 @@ const { values: options, positionals: [command, argument] } = parseArgs({
   },
 });
 const COMMANDS = { ask, wait, serve };
-if (!COMMANDS[command] || (command !== "serve" && !argument)) fail(USAGE);
+if (!COMMANDS[command] || (command === "wait" && !argument)) fail(USAGE);
 await COMMANDS[command](argument, options).catch((error) => fail(error.message));
