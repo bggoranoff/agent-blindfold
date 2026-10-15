@@ -23,6 +23,9 @@ const USERNAME = "ada@example.com";
 const PASSWORD = "correct-horse-battery-staple";
 const LOGIN = `<form method="post"><input type="email" name="identifier" autocomplete="username"><button>Next</button></form>`;
 const PASSWORD_PAGE = `<form method="post"><input type="password" name="secret"><button>Sign in</button></form>`;
+const DEAF_PAGE = `<form method="post"><input type="password" name="deaf" onkeydown="event.key === 'Enter' && event.preventDefault()">
+  <button>Sign in</button></form>`;
+const STUCK_PAGE = `<form onsubmit="return false"><input type="password" name="stuck"><button>Sign in</button></form>`;
 
 let chrome, profile, cdp, site, other;
 
@@ -33,7 +36,12 @@ function fixture() {
     let body = "";
     for await (const chunk of request) body += chunk;
     Object.assign(received, Object.fromEntries(new URLSearchParams(body)));
-    const next = { "POST /login": [303, "", { Location: "/password" }], "GET /password": [200, PASSWORD_PAGE, {}] };
+    const next = {
+      "POST /login": [303, "", { Location: "/password" }],
+      "GET /password": [200, PASSWORD_PAGE, {}],
+      "GET /deaf": [200, DEAF_PAGE, {}],
+      "GET /stuck": [200, STUCK_PAGE, {}],
+    };
     const [status, html, headers] = next[`${request.method} ${request.url}`] ?? [200, LOGIN, {}];
     response.writeHead(status, { "Content-Type": "text/html", ...headers }).end(html);
   });
@@ -115,5 +123,27 @@ test("a tab that moved to another origin gets nothing typed", { skip: !CHROME &&
 
   assert.equal(waited.result.status, "failed");
   assert.match(waited.result.reason, new RegExp(other.url));
+  assert.equal(await evaluate(tab, "document.querySelector('input').value"), "");
+});
+
+test("a form that ignores Enter is sent with its own button", { skip: !CHROME && "no Chromium" }, async () => {
+  await openTab(`${site.url}/deaf`);
+  await sleep(500);
+  const asked = await run("ask", "password", "--tab", "/deaf");
+  await fetch(asked.result.url, { method: "POST", body: JSON.stringify({ password: PASSWORD }) });
+  const waited = await run("wait", asked.result.id);
+
+  assert.equal(waited.result.status, "filled");
+  assert.equal(site.received.deaf, PASSWORD);
+});
+
+test("a password the page still holds is emptied before the agent hears back", { skip: !CHROME && "no Chromium" }, async () => {
+  const tab = await openTab(`${site.url}/stuck`);
+  await sleep(500);
+  const asked = await run("ask", "password", "--tab", "/stuck");
+  await fetch(asked.result.url, { method: "POST", body: JSON.stringify({ password: PASSWORD }) });
+  const waited = await run("wait", asked.result.id);
+
+  assert.equal(waited.result.cleared, true);
   assert.equal(await evaluate(tab, "document.querySelector('input').value"), "");
 });

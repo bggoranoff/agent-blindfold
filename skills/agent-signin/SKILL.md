@@ -5,7 +5,7 @@ description: Sign your browser in to a website with a login the user types on a 
 
 # Agent sign-in
 
-You never handle the user's password or code. `signin.mjs` (next to this file) opens a one-time page where the user types them, often from their password manager. It types them into your browser tab itself and presses Enter. You only learn which fields it typed.
+You never handle the user's password or code. `signin.mjs` (next to this file) opens a one-time page where the user types them, often from their password manager. It types them into your browser tab itself and submits the form. You only learn which fields it typed.
 
 It needs Node 22 and the Chromium you drive, reachable over its DevTools port: `$CDP_URL`, or `http://127.0.0.1:9222` by default.
 
@@ -31,7 +31,7 @@ It needs Node 22 and the Chromium you drive, reachable over its DevTools port: `
 4. On `"status": "filled"`, look at the page:
    - Signed in: carry on with the task.
    - It asks for a code: go back to step 2 with `code`.
-   - Wrong password, or a field listed in `unused`: go back to step 2 and tell the user what the site said.
+   - Wrong password, a field listed in `unused`, or `"cleared": true` with no error on the page: go back to step 2 and tell the user what the site said.
    - A CAPTCHA, a passkey or an approval in another app: ask the user to do it, then look again.
 5. On `failed`, `cancelled` or `expired`, tell the user the `reason` in one line and stop.
 
@@ -39,4 +39,5 @@ It needs Node 22 and the Chromium you drive, reachable over its DevTools port: `
 
 - Never ask for a password or code in chat. If the user sends one anyway, don't type it. Point them to the page.
 - Never read back what the script typed: no reading a field's `value`, no screenshot of a revealed password.
+- Don't look at the page while `wait` runs. Until it returns, the page may still hold the password, and a snapshot would show it.
 - The page shows the user the exact origin the login goes to. If the tab moves to another site before they answer, nothing is typed: run `ask` again on the new page.

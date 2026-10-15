@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Hand a login from the user to the agent's browser on a one-time page, without the agent ever seeing it.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -22,7 +22,12 @@ const FIELDS = ["username", "password", "code"];
 const STATE = join(tmpdir(), "agent-signin");
 const PUBLIC_PORT = 8769;
 const NEXT_FIELD_MS = 15000;
+const SETTLE_MS = 10000;
+// Sites check a field when it loses focus and hold back a submit until that check is done, as a person's pause allows.
+const PAUSE_MS = 1000;
 const OPENERS = { darwin: "open", win32: "explorer" };
+const CHROMIUM = /chrome|chromium|edge|brave|vivaldi/i;
+const WINDOW = ["--window-size=440,640"];
 // Runs in the tab. The origin check and the typing share one evaluation, so a navigation cannot slip between them.
 const FILL = `(origin, values) => {
   if (location.origin !== origin) return { moved: location.origin };
@@ -63,6 +68,21 @@ const FILL = `(origin, values) => {
     typed.push("code");
   }
   return { typed };
+}`;
+// Runs in the tab: clicks the submit button of the form holding the value, as some sites ignore a synthetic Enter.
+const SUBMIT = `(origin, value) => {
+  if (location.origin !== origin) return true;
+  const field = [...document.querySelectorAll("input")].find((e) => e.value === value);
+  const button = field?.form && [...field.form.elements].find((e) => e.type === "submit" && !e.disabled);
+  button?.click();
+  return Boolean(button);
+}`;
+// Runs in the tab: finds inputs still holding a typed secret, and empties them when asked.
+const HELD = `(origin, secrets, empty) => {
+  if (location.origin !== origin) return 0;
+  const held = [...document.querySelectorAll("input")].filter((e) => secrets.includes(e.value));
+  if (empty) held.forEach((e) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, ""));
+  return held.length;
 }`;
 
 function fail(message) {
@@ -120,8 +140,36 @@ async function ask(fields, options) {
   console.log(JSON.stringify({ id, ...state }));
   if (state.status !== "waiting") process.exit(1);
   if (options.public || options.tunnel) return;
-  const opener = process.env.BROWSER ?? OPENERS[process.platform] ?? "xdg-open";
-  spawn(opener, [state.url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+  openPage(state.url);
+}
+
+// A Chromium default browser shows the page as a small app window, which the page can close itself.
+function openPage(url) {
+  const plain = [process.env.BROWSER ?? OPENERS[process.platform] ?? "xdg-open", url];
+  const app = process.env.BROWSER ? null : DEFAULT_CHROMIUM[process.platform]?.(url);
+  const launch = ([command, ...args], fallback) => spawn(command, args, { detached: true, stdio: "ignore" })
+    .on("error", () => fallback && launch(fallback)).unref();
+  launch(app ?? plain, app && plain);
+}
+
+const DEFAULT_CHROMIUM = {
+  darwin: (url) => {
+    const handlers = run("defaults", ["read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"]);
+    const bundle = handlers.match(/LSHandlerRoleAll = "?([\w.-]+)"?;\s*LSHandlerURLScheme = https;/)?.[1];
+    return CHROMIUM.test(bundle) && ["open", "-nb", bundle, "--args", `--app=${url}`, ...WINDOW];
+  },
+  linux: (url) => {
+    const name = run("xdg-settings", ["get", "default-web-browser"]).trim().replace(/\.desktop$/, "");
+    return CHROMIUM.test(name) && [name, `--app=${url}`, ...WINDOW];
+  },
+};
+
+function run(command, args) {
+  try {
+    return execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return "";
+  }
 }
 
 async function settled(id, done, deadline) {
@@ -143,11 +191,14 @@ async function wait(id) {
 async function serve() {
   const config = JSON.parse(readFileSync(0, "utf8"));
   const save = (state) => writeState(config.id, { origin: config.origin, fields: config.fields, ...state });
-  let tunnel;
+  let tunnel, over;
   const finish = (state) => {
+    if (over) return;
+    over = true;
     save(state);
     tunnel?.kill();
-    process.exit(0);
+    // A beat for the answer to reach the page, which may already have been closed mid-fill.
+    setTimeout(() => process.exit(0), 500);
   };
   try {
     const server = createServer(handler(config, finish));
@@ -193,7 +244,8 @@ function handler(config, finish) {
   let busy = false;
   const reply = (response, status, text, result) => {
     response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-    response.end(JSON.stringify({ message: text }), () => result && finish(result));
+    response.end(JSON.stringify({ message: text, close: Boolean(result) }));
+    if (result) finish(result);
   };
   return async (request, response) => {
     // The token may sit under any prefix a reverse proxy adds.
@@ -216,7 +268,7 @@ function handler(config, finish) {
 
 function message(config, result) {
   const host = new URL(config.origin).host;
-  if (result.status === "filled") return `Typed your ${result.filled.join(" and ")} into ${host}. You can close this page.`;
+  if (result.status === "filled") return `Typed your ${result.filled.join(" and ")} into ${host}.`;
   return `Nothing more was typed: ${result.reason}`;
 }
 
@@ -240,14 +292,32 @@ async function fill(config, values) {
     }
     filled.push(...outcome.typed);
     left = left.filter((field) => !outcome.typed.includes(field));
-    await pressEnter(browser);
+    await sleep(PAUSE_MS);
+    await submit(browser, config.origin, values[outcome.typed.at(-1)]);
     deadline = Date.now() + NEXT_FIELD_MS;
   }
   if (!filled.length) return { status: "failed", reason: `No ${left.join(" or ")} field showed on ${config.origin}.`, filled };
-  return { status: "filled", filled, unused: left };
+  const cleared = await settle(browser, config.origin, [values.password, values.code].filter(Boolean));
+  return { status: "filled", filled, unused: left, ...(cleared && { cleared: true }) };
 }
 
-async function pressEnter(browser) {
+// Page snapshots show what a password field holds, so nothing typed may still sit in the page when the agent looks.
+async function settle(browser, origin, secrets) {
+  const held = async (empty) => {
+    const expression = `(${HELD})(${JSON.stringify(origin)}, ${JSON.stringify(secrets)}, ${empty})`;
+    const { result } = await browser.send("Runtime.evaluate", { expression, returnByValue: true });
+    return result?.value ?? 1;
+  };
+  for (const deadline = Date.now() + SETTLE_MS; Date.now() < deadline; await sleep(300)) {
+    if (!(await held(false))) return false;
+  }
+  return Boolean(await held(true));
+}
+
+async function submit(browser, origin, value) {
+  const expression = `(${SUBMIT})(${JSON.stringify(origin)}, ${JSON.stringify(value)})`;
+  const { result } = await browser.send("Runtime.evaluate", { expression, returnByValue: true });
+  if (result?.value) return;
   const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
   await browser.send("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
   await browser.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
@@ -318,7 +388,9 @@ async function send(path, body) {
   form.hidden = cancel.hidden = true;
   status.textContent = "Signing in…";
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => null);
-  status.textContent = response?.ok ? (await response.json()).message : "This link is no longer open.";
+  const answer = response?.ok ? await response.json() : { message: "This link is no longer open." };
+  status.textContent = answer.message;
+  if (answer.close) setTimeout(() => window.close(), 2500);
 }
 form.onsubmit = (event) => {
   event.preventDefault();
