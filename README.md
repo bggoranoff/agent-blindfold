@@ -27,8 +27,24 @@ The agent's browser must be a Chromium with a DevTools port, which is how Playwr
 ```sh
 mkdir -p ~/.agent-browser/Default
 echo '{"credentials_enable_service":false,"profile":{"password_manager_enabled":false}}' > ~/.agent-browser/Default/Preferences
-google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.agent-browser"
-npx @playwright/mcp --cdp-endpoint http://127.0.0.1:9222
+```
+
+Then give your agents a browser tool that starts that Chrome when it is not running yet. On macOS, save this as `~/.local/bin/agent-browser-mcp` and make it executable:
+
+```sh
+#!/bin/sh
+PORT=9222
+up() { curl -s -m 1 "http://127.0.0.1:$PORT/json/version" >/dev/null; }
+if ! up; then
+  open -gna "Google Chrome" --args --remote-debugging-port=$PORT --user-data-dir="$HOME/.agent-browser" --no-first-run
+  for _ in $(seq 40); do up && break; sleep 0.25; done
+fi
+exec npx -y @playwright/mcp --cdp-endpoint "http://127.0.0.1:$PORT"
+```
+
+```sh
+claude mcp add --scope user browser -- ~/.local/bin/agent-browser-mcp   # Claude Code
+codex mcp add browser -- ~/.local/bin/agent-browser-mcp                 # Codex
 ```
 
 Set `CDP_URL` when the port is not `http://127.0.0.1:9222`.
