@@ -3,7 +3,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,13 +38,15 @@ const PUBLIC_PORT = 8769;
 const POLL_MS = 100;
 const SETTLE_MS = 10000;
 const LOAD_MS = 15000;
+const COMMAND_MS = 10000;
+const TUNNEL_MS = 30000;
 // Sites check a box when it loses focus and hold back a submit until that check is done, so a submit waits for the
 // page's requests to go quiet, for at most as long as a person's pause.
 const PAUSE_MS = 1000;
 const QUIET_MS = 150;
 const OPENERS = { darwin: "open", win32: "explorer" };
 const CHROMIUM = /chrome|chromium|edge|brave|vivaldi/i;
-const WINDOW = ["--window-size=440,640"];
+const WINDOW = ["--window-size=360,420"];
 
 // Finds the boxes to ask for, when the user is asked, and keeps them in globalThis.wired for DevTools references.
 const DETECT = `(how, wanted, positions) => {
@@ -81,7 +83,9 @@ const DETECT = `(how, wanted, positions) => {
     return [{ kind: wanted[0], boxes: [box] }];
   };
   const characters = () => {
-    const boxes = [inputs.filter((e) => e.maxLength === 1), inputs.filter((e) => e.type === "password")]
+    // A password's characters go only into boxes that hide them; a memorable word's may go into boxes that show.
+    const fit = wanted[0] === "password" ? inputs.filter((e) => e.type === "password") : inputs;
+    const boxes = [fit.filter((e) => e.maxLength === 1), fit.filter((e) => e.type === "password")]
       .find((list) => list.length === positions.length);
     return boxes ? [{ kind: wanted[0], boxes }] : { reason: \`No \${positions.length} boxes for the characters show on this page.\` };
   };
@@ -99,14 +103,21 @@ const TYPE = `function (origin, texts, kinds, ...boxes) {
   if (boxes.some((e, i) => kinds[i] === "password" && e.type !== "password")) {
     return { reason: "The password box no longer hides what is typed, so nothing was typed." };
   }
-  boxes.forEach((e, i) => {
+  const set = (e, text) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, text);
+  for (const [i, e] of boxes.entries()) {
     e.focus();
     e.select();
-    if (document.execCommand("insertText", false, texts[i])) return;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, texts[i]);
+    // The page's own focus handlers have run by now, and could have moved the cursor or revealed the box.
+    const safe = e.isConnected && document.activeElement === e && (kinds[i] !== "password" || e.type === "password");
+    if (!safe) {
+      boxes.slice(0, i).forEach((typed) => set(typed, ""));
+      return { reason: "The page moved the cursor while typing, so what was typed was taken out again." };
+    }
+    if (document.execCommand("insertText", false, texts[i])) continue;
+    set(e, texts[i]);
     e.dispatchEvent(new Event("input", { bubbles: true }));
     e.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  }
   return {};
 }`;
 // Clicks the submit button of the box's form, as some sites ignore a synthetic Enter; false when there is none to click.
@@ -125,8 +136,11 @@ const HELD = `(origin, secrets, empty) => {
 }`;
 const PROBE = `() => ({ active: document.activeElement?.tagName === "INPUT", focus: document.hasFocus() })`;
 
+// Written synchronously: the process often exits right after, and a pending write to an agent's pipe would be lost.
+const say = (fd, text) => writeSync(fd, `${text}\n`);
+
 function fail(message) {
-  console.error(message);
+  say(2, message);
   process.exit(2);
 }
 
@@ -151,12 +165,15 @@ async function pages(cdp) {
   return (await response.json()).filter((target) => target.type === "page");
 }
 
+// A tab's address without its query or fragment, where sign-in links and OAuth codes keep their tokens.
+const bare = (url) => url.split(/[?#]/)[0];
+
 async function pickTab(cdp, text = "") {
   const all = await pages(cdp);
   const matches = all.filter((tab) => tab.url.includes(text));
   if (matches.length !== 1) {
     fail(`${matches.length} tabs match ${JSON.stringify(text)}. Pass --tab with part of one URL:\n`
-      + all.map((tab) => tab.url).join("\n"));
+      + all.map((tab) => bare(tab.url)).join("\n"));
   }
   return matches[0];
 }
@@ -169,7 +186,7 @@ async function ask(fields, options) {
   if (options.public && !options.public.startsWith("https://")) fail("--public must be an https:// URL.");
   const tab = await pickTab(options.cdp, options.tab);
   const top = new URL(options.dialog ?? tab.url).origin;
-  if (!/^https?:/.test(top)) fail(`The tab is on ${tab.url}, not a website.`);
+  if (!/^https?:/.test(top)) fail(`The tab is on ${bare(tab.url)}, not a website.`);
   const kind = wanted.includes("link") ? "link" : options.dialog ? "dialog" : "boxes";
   const target = await TARGETS[kind](tab, wanted, options);
   const id = randomBytes(6).toString("base64url");
@@ -183,8 +200,9 @@ async function ask(fields, options) {
   const server = spawn(process.execPath, [SELF, "serve"], { detached: true, stdio: ["pipe", "ignore", "ignore"] });
   server.stdin.end(JSON.stringify(config));
   server.unref();
-  const state = await settled(id, (s) => s.url || s.status !== "waiting", Date.now() + 30000);
-  console.log(JSON.stringify({ id, ...state }));
+  // A tunnel can take one wait for its URL and another for its DNS record.
+  const state = await settled(id, (s) => s.url || s.status !== "waiting", Date.now() + 2 * TUNNEL_MS + 5000);
+  say(1, JSON.stringify({ id, ...state }));
   if (state.status !== "waiting") process.exit(1);
   if (!options.public && !options.tunnel) openPage(state.url);
   if (options.wait) await wait(id);
@@ -318,7 +336,7 @@ async function settled(id, done, deadline) {
 async function wait(id) {
   const state = await settled(id, (s) => s.status !== "waiting", Date.now() + 30000);
   rmSync(join(STATE, `${id}.json`), { force: true });
-  console.log(JSON.stringify(state));
+  say(1, JSON.stringify(state));
   process.exit(state.status === "filled" ? 0 : 1);
 }
 
@@ -326,23 +344,26 @@ async function serve() {
   const config = JSON.parse(readFileSync(0, "utf8"));
   const kinds = config.fields.map((field) => field.kind);
   const save = (state) => writeState(config.id, { origin: config.origin, fields: kinds, ...state });
+  const job = { busy: false };
   let tunnel, over;
   const finish = (state) => {
     if (over) return;
     over = true;
+    job.busy = true;
     save(state);
     tunnel?.kill();
     // A beat for the answer to reach the page, which may already have been closed mid-fill.
     setTimeout(() => process.exit(0), 500);
   };
   try {
-    const server = createServer(handler(config, finish));
+    const server = createServer(handler(config, finish, job));
     await new Promise((resolve, reject) => server.once("error", reject).listen(config.port, "127.0.0.1", resolve));
     const local = `http://127.0.0.1:${server.address().port}`;
     if (config.tunnel) [tunnel, config.public] = await openTunnel(local);
     const expires = Date.now() + config.minutes * 60000;
     save({ status: "waiting", url: `${(config.public ?? local).replace(/\/$/, "")}/${config.token}`, expires });
-    setTimeout(() => finish({ status: "expired" }), expires - Date.now());
+    // A fill under way finishes, cleanup included, even when the link expires meanwhile.
+    setTimeout(() => job.busy || finish({ status: "expired" }), expires - Date.now());
   } catch (error) {
     finish({ status: "failed", reason: error.message });
   }
@@ -354,6 +375,10 @@ async function openTunnel(local) {
   const url = await new Promise((resolve, reject) => {
     tunnel.on("error", () => reject(new Error("--tunnel needs cloudflared on the PATH.")));
     tunnel.on("exit", () => reject(new Error("cloudflared exited before it had a URL.")));
+    setTimeout(() => {
+      tunnel.kill();
+      reject(new Error("cloudflared had no URL after 30 seconds."));
+    }, TUNNEL_MS);
     tunnel.stderr.on("data", (chunk) => {
       log += chunk;
       const found = log.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
@@ -370,13 +395,12 @@ async function published(host) {
   const [server] = await dns.resolveNs("trycloudflare.com");
   const resolver = new dns.Resolver();
   resolver.setServers([(await dns.lookup(server, { family: 4 })).address]);
-  for (const deadline = Date.now() + 30000; Date.now() < deadline; await sleep(1000)) {
+  for (const deadline = Date.now() + TUNNEL_MS; Date.now() < deadline; await sleep(1000)) {
     if (await resolver.resolve4(host).catch(() => null)) return;
   }
 }
 
-function handler(config, finish) {
-  let busy = false;
+function handler(config, finish, job) {
   const reply = (response, status, text, result) => {
     response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     response.end(JSON.stringify({ message: text, close: Boolean(result) }));
@@ -387,14 +411,14 @@ function handler(config, finish) {
     const [, rest] = new URL(request.url, "http://localhost").pathname.split(`/${config.token}`);
     const route = `${request.method} ${rest}`;
     if (route === "GET ") return page(response, config);
-    if (route === "POST /cancel" && !busy) return reply(response, 200, "Cancelled. Nothing was typed.", { status: "cancelled" });
-    if (route !== "POST " || busy) return reply(response, 404, "This link is no longer open.");
+    if (route === "POST /cancel" && !job.busy) return reply(response, 200, "Cancelled. Nothing was typed.", { status: "cancelled" });
+    if (route !== "POST " || job.busy) return reply(response, 404, "This link is no longer open.");
     const sent = await json(request).catch(() => ({}));
     const values = Object.fromEntries(config.fields.filter((f) => sent[f.kind]).map((f) => [f.kind, String(sent[f.kind])]));
     if (Object.keys(values).length < config.fields.length) return reply(response, 400, "Fill in every box first.");
     // Checked again after the await and set before the next one, so two POSTs can never both fill.
-    if (busy) return reply(response, 404, "This link is no longer open.");
-    busy = true;
+    if (job.busy) return reply(response, 404, "This link is no longer open.");
+    job.busy = true;
     const result = await fill(config, values).catch(() => failed("The browser stopped answering."));
     reply(response, 200, message(config, result), result);
   };
@@ -427,7 +451,7 @@ async function typeWired(browser, config, values) {
   const here = await evaluate(browser, frame, "() => location.origin");
   if (here !== config.origin) return failed(`The page left ${config.origin} for ${here}.`);
   const plan = config.fields.flatMap((field) => field.boxes.map((node, i) => ({
-    node, kind: config.characters ? "character" : field.kind, text: piece(field, values[field.kind], i, config.characters),
+    node, kind: field.kind, text: piece(field, values[field.kind], i, config.characters),
   })));
   if (plan.some((box) => box.text === undefined)) return failed("The answer is shorter than the boxes it has to fill.");
   const quiet = await requests(browser);
@@ -487,20 +511,23 @@ async function submit(browser, frame, origin, box) {
 async function openLink(browser, config, values) {
   const url = URL.parse(values.link);
   if (!["http:", "https:"].includes(url?.protocol)) return failed("That is not a web link.");
-  await browser.send("Page.navigate", { url: url.href });
+  const { frameId, errorText } = await browser.send("Page.navigate", { url: url.href });
+  if (!frameId || errorText) return failed(errorText ?? "The link did not open.");
   return { status: "filled", filled: ["link"] };
 }
 
 // Answers the browser's own login dialog (HTTP authentication), only for the origin the page named.
 async function answerDialog(browser, config, values) {
   let asked = 0;
-  browser.on("Fetch.requestPaused", ({ requestId }) => browser.send("Fetch.continueRequest", { requestId }));
+  const ignore = () => {};
+  browser.on("Fetch.requestPaused", ({ requestId }) => browser.send("Fetch.continueRequest", { requestId }).catch(ignore));
   browser.on("Fetch.authRequired", ({ requestId, request, authChallenge }) => {
     const ours = authChallenge.source === "Server" && new URL(request.url).origin === config.origin;
     // A second challenge means the site turned the first answer down, so it is not sent again.
     const answer = ours && asked++ === 0;
     const credentials = { response: "ProvideCredentials", username: values.username, password: values.password };
-    browser.send("Fetch.continueWithAuth", { requestId, authChallengeResponse: answer ? credentials : { response: "CancelAuth" } });
+    const authChallengeResponse = answer ? credentials : { response: "CancelAuth" };
+    browser.send("Fetch.continueWithAuth", { requestId, authChallengeResponse }).catch(ignore);
   });
   await browser.send("Fetch.enable", { handleAuthRequests: true });
   await browser.send("Page.enable");
@@ -521,15 +548,25 @@ async function connect(url) {
   const pending = new Map();
   const listeners = {};
   let next = 0;
+  const done = (id, result, error) => {
+    const call = pending.get(id);
+    pending.delete(id);
+    clearTimeout(call?.timer);
+    if (error) return call?.reject(error);
+    call?.resolve(result);
+  };
   socket.onmessage = ({ data }) => {
     const message = JSON.parse(data);
     if (message.method) return listeners[message.method]?.(message.params);
-    pending.get(message.id)?.(message.result ?? {});
-    pending.delete(message.id);
+    done(message.id, message.result ?? {});
   };
-  const send = (method, params, sessionId) => new Promise((resolve) => {
-    pending.set(++next, resolve);
-    socket.send(JSON.stringify({ id: next, method, params, sessionId }));
+  socket.onclose = () => [...pending.keys()].forEach((id) => done(id, null, new Error("The browser closed the connection.")));
+  // A browser that stops answering fails the step instead of leaving it waiting forever.
+  const send = (method, params, sessionId) => new Promise((resolve, reject) => {
+    const id = ++next;
+    const timer = setTimeout(() => done(id, null, new Error("The browser stopped answering.")), COMMAND_MS);
+    pending.set(id, { resolve, reject, timer });
+    socket.send(JSON.stringify({ id, method, params, sessionId }));
   });
   const on = (method, listener) => {
     listeners[method] = listener;
@@ -564,8 +601,8 @@ function page(response, config) {
 
 const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-const EYE = `<button type="button" class="eye" aria-label="Show" aria-pressed="false"><svg viewBox="0 0 24 24" width="22"
-  height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+const EYE = `<button type="button" class="eye" aria-label="Show" aria-pressed="false"><svg viewBox="0 0 24 24" width="18"
+  height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
   <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/>
   </svg></button>`;
 
@@ -588,15 +625,15 @@ const PAGE = `<!doctype html><html lang="en"><meta charset="utf-8">
 <style>
 :root{--bg:#faf9f5;--fg:#1f1e1d;--muted:#6b6a66;--card:#fff;--line:#e3e1da}
 @media (prefers-color-scheme:dark){:root{--bg:#1f1e1d;--fg:#f0eee6;--muted:#a3a19a;--card:#2a2927;--line:#3d3c39}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.5 -apple-system,system-ui,sans-serif}
-main{max-width:380px;margin:0 auto;padding:40px 16px}h1{font-size:24px;margin:0;text-align:center}
-p{text-align:center;margin:4px 0}.sub{color:var(--muted)}.host{font-weight:700;font-size:20px;overflow-wrap:anywhere}
-form{margin-top:16px}label{display:block;font-size:14px;color:var(--muted);margin:16px 0 6px}
-input{width:100%;font:inherit;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg)}
-button{display:block;width:100%;font:inherit;font-weight:600;padding:13px;margin-top:20px;border:0;border-radius:10px;background:var(--fg);color:var(--bg)}
-button.quiet{background:none;color:var(--muted);margin-top:8px}[hidden]{display:none}
-.secret{position:relative}.secret input{padding-right:52px}
-.eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:flex;width:44px;margin:0;padding:10px;background:none;color:var(--muted)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,system-ui,sans-serif}
+main{max-width:340px;margin:0 auto;padding:18px 16px 10px}h1{font-size:19px;margin:0;text-align:center}
+p{text-align:center;margin:2px 0}.sub{color:var(--muted);font-size:13px}.host{font-weight:700;font-size:16px;overflow-wrap:anywhere}
+form{margin-top:8px}label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+input{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
+button{display:block;width:100%;font:inherit;font-weight:600;padding:9px;margin-top:14px;border:0;border-radius:8px;background:var(--fg);color:var(--bg)}
+button.quiet{background:none;color:var(--muted);margin-top:2px;padding:6px}[hidden]{display:none}
+.secret{position:relative}.secret input{padding-right:40px}
+.eye{position:absolute;right:2px;top:50%;transform:translateY(-50%);display:flex;width:36px;margin:0;padding:7px;background:none;color:var(--muted)}
 .eye:not([aria-pressed=true]) .slash{display:none}
 </style>
 <main><h1>Sign in</h1><p class="sub">{sub}</p><p class="host">{host}</p>{inside}
@@ -618,6 +655,10 @@ form.onsubmit = (event) => {
   send(location.pathname, body);
 };
 cancel.onclick = () => send(location.pathname + "/cancel", "{}");
+// Fit the small window to the form and centre it on its screen; a browser tab ignores both.
+const height = Math.ceil(document.querySelector("main").getBoundingClientRect().bottom) + outerHeight - innerHeight;
+resizeTo(outerWidth, height);
+moveTo(screen.availLeft + (screen.availWidth - outerWidth) / 2, screen.availTop + (screen.availHeight - height) / 2);
 for (const eye of document.querySelectorAll(".eye")) eye.onclick = () => {
   const input = eye.previousElementSibling, show = input.type === "password";
   input.type = show ? "text" : "password";

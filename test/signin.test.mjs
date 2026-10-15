@@ -29,8 +29,8 @@ const DEAF_PAGE = `<form method="post"><input type="password" name="deaf" onkeyd
   <button>Sign in</button></form>`;
 const STUCK_PAGE = `<form onsubmit="return false"><input type="password" name="stuck"><button>Sign in</button></form>`;
 const WORD_PAGE = `<form method="post"><input type="text" name="word"><button>Next</button></form>`;
-const CHARACTERS_PAGE = `<form method="post"><input maxlength="1" name="c1"><input maxlength="1" name="c2">
-  <input maxlength="1" name="c3"><button>Next</button></form>`;
+const CHARACTERS_PAGE = `<form method="post"><input type="password" maxlength="1" name="c1">
+  <input type="password" maxlength="1" name="c2"><input type="password" maxlength="1" name="c3"><button>Next</button></form>`;
 const FRAMED_PAGE = `<form method="post"><input type="password" name="framed"><button>Sign in</button></form>`;
 
 let chrome, profile, cdp, site, other;
@@ -106,13 +106,15 @@ before(async () => {
   chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run",
     "--no-default-browser-check", "about:blank"], { stdio: "ignore" });
   const portFile = join(profile, "DevToolsActivePort");
-  while (!existsSync(portFile)) await sleep(100);
+  for (const deadline = Date.now() + 15000; !existsSync(portFile); await sleep(100)) {
+    if (Date.now() > deadline || chrome.exitCode !== null) throw new Error("Chrome did not start.");
+  }
   cdp = `http://127.0.0.1:${readFileSync(portFile, "utf8").split("\n")[0]}`;
   [site, other] = await Promise.all([fixture(), fixture()]);
 });
 
 after(async () => {
-  const exited = chrome && new Promise((resolve) => chrome.once("exit", resolve));
+  const exited = chrome?.exitCode === null && new Promise((resolve) => chrome.once("exit", resolve));
   chrome?.kill();
   await exited;
   site?.server.close();
