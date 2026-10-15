@@ -7,7 +7,7 @@ description: Sign your browser in to a website with a login the user enters on a
 
 You never handle the user's secrets. `signin.mjs`, next to this file, shows the user a one-time page their password manager can fill. It types what they enter into your browser tab itself and submits. You only learn which fields it typed. Run it as shown here; there is no need to read it or check your setup first.
 
-It reaches your Chromium over its DevTools port: `$CDP_URL`, or `http://127.0.0.1:9222`.
+It reaches your Chromium over its DevTools port: `$CDP_URL`, or `http://127.0.0.1:9222`. It works only in that browser. If you browse with something else, such as a built-in or extension browser, open the site with the tools that drive that Chromium instead, such as a Playwright MCP server connected to it, and sign in there.
 
 ## 1. Pick the command
 

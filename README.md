@@ -49,6 +49,14 @@ codex mcp add browser -- ~/.local/bin/agent-browser-mcp                 # Codex
 
 Set `CDP_URL` when the port is not `http://127.0.0.1:9222`.
 
+Codex runs commands in a sandbox that blocks the DevTools port. Let only this script out with a rule, for example in `~/.codex/rules/agent-signin.rules`:
+
+```
+prefix_rule(pattern = ["node", "/path/to/agent-signin/skills/agent-signin/signin.mjs"], decision = "allow")
+```
+
+Codex also asks before it first uses the browser tool. Approve it then, or set `default_tools_approval_mode = "approve"` under `[mcp_servers.browser]`.
+
 ## Use
 
 ```sh
