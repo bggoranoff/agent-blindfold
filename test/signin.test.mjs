@@ -14,10 +14,16 @@ import { promisify } from "node:util";
 const SCRIPT = fileURLToPath(new URL("../skills/agent-blindfold/signin.mjs", import.meta.url));
 // Set by extension.test.mjs, which runs every login again through the companion extension instead of the DevTools port.
 const EXTENSION = process.env.AGENT_BLINDFOLD_TEST_EXTENSION && fileURLToPath(new URL("../skills/agent-blindfold/extension", import.meta.url));
-// Another extension that stays attached to every tab, as Claude in Chrome does while it drives one.
+// Another extension that stays attached to every tab, as Claude in Chrome does while it drives one, and puts a hidden
+// frame of its own in every page, as password managers do.
 const OTHER_MANIFEST = {
   manifest_version: 3, name: "other", version: "1", permissions: ["debugger"], background: { service_worker: "other.js" },
+  content_scripts: [{ matches: ["http://*/*"], js: ["frame.js"] }],
+  web_accessible_resources: [{ resources: ["frame.html"], matches: ["http://*/*"] }],
 };
+const OTHER_FRAME = `document.documentElement.append(Object.assign(document.createElement("iframe"), {
+  src: chrome.runtime.getURL("frame.html"), style: "position:fixed;width:2px;height:2px;opacity:0;border:0",
+}));`;
 const OTHER_WORKER = `setInterval(async () => {
   const pages = (await chrome.debugger.getTargets()).filter((target) => target.type === "page" && target.url.startsWith("http"));
   pages.forEach((page) => chrome.debugger.attach({ targetId: page.id }, "1.3").catch(() => {}));
@@ -122,6 +128,8 @@ function install() {
   mkdirSync(peer);
   writeFileSync(join(peer, "manifest.json"), JSON.stringify(OTHER_MANIFEST));
   writeFileSync(join(peer, "other.js"), OTHER_WORKER);
+  writeFileSync(join(peer, "frame.js"), OTHER_FRAME);
+  writeFileSync(join(peer, "frame.html"), "<p>other</p>");
   return [`--load-extension=${EXTENSION},${peer}`];
 }
 

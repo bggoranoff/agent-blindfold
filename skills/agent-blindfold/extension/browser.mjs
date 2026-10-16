@@ -1,16 +1,16 @@
-// The browser half of agent-blindfold: finds the login boxes in a tab and fills them, over whatever DevTools connection it is
-// given. signin.mjs runs it over a DevTools port, and the companion extension runs it inside the user's own Chrome.
+// The browser half of agent-blindfold: finds the login boxes in a tab and fills them. signin.mjs runs it over a DevTools
+// port, and the companion extension runs its page functions in the user's own Chrome with chrome.scripting.
 
 export const POLL_MS = 100;
 const SETTLE_MS = 10000;
-const LOAD_MS = 15000;
+export const LOAD_MS = 15000;
 // Sites check a box when it loses focus and hold back a submit until that check is done, so a submit waits for the
 // page's requests to go quiet, for at most as long as a person's pause.
-const PAUSE_MS = 1000;
+export const PAUSE_MS = 1000;
 const QUIET_MS = 150;
 
-// Finds the boxes to ask for, when the user is asked, and keeps them in globalThis.wired for DevTools references.
-const DETECT = `(how, wanted, positions) => {
+// Finds the boxes to ask for, when the user is asked, and keeps them in globalThis.wired for the fill to reach.
+export const DETECT = (how, wanted, positions, key) => {
   // Password managers' and sites' helper fields render but are aria-hidden; no person can see or reach them.
   const shown = (e) => e.getClientRects().length && !e.disabled && !e.readOnly && !e.closest("[aria-hidden=true]")
     && getComputedStyle(e).visibility !== "hidden" && !["hidden", "submit", "button", "checkbox", "radio"].includes(e.type);
@@ -33,7 +33,7 @@ const DETECT = `(how, wanted, positions) => {
     // A code box only counts on its own page, so a sign-in form with a stray "code" box asks for no code.
     const kinds = wanted.length ? wanted : username || password ? ["username", "password"] : ["code"];
     const missing = wanted.filter((kind) => !all[kind]);
-    if (missing.length) return { reason: \`No \${missing.join(" or ")} box shows on this page.\` };
+    if (missing.length) return { reason: `No ${missing.join(" or ")} box shows on this page.` };
     const fields = kinds.filter((kind) => all[kind]).map((kind) => ({ kind, boxes: all[kind] }));
     return fields.length ? fields : { reason: "No login box shows on this page. Click into the box and ask with --focused." };
   };
@@ -48,18 +48,22 @@ const DETECT = `(how, wanted, positions) => {
     const fit = wanted[0] === "password" ? inputs.filter((e) => e.type === "password") : inputs;
     const boxes = [fit.filter((e) => e.maxLength === 1), fit.filter((e) => e.type === "password")]
       .find((list) => list.length === positions.length);
-    return boxes ? [{ kind: wanted[0], boxes }] : { reason: \`No \${positions.length} boxes for the characters show on this page.\` };
+    return boxes ? [{ kind: wanted[0], boxes }] : { reason: `No ${positions.length} boxes for the characters show on this page.` };
   };
   const picked = { find, focused, characters }[how]();
   if (picked.reason) return picked;
   globalThis.wired = picked.flatMap((field) => field.boxes);
+  // The companion extension keeps only its latest find's boxes, for that find's one fill.
+  if (key) globalThis.kept = { [key]: globalThis.wired };
   const fields = picked.map(({ kind, boxes }) => ({ kind, count: boxes.length, label: boxes.length > 1 ? "" : label(boxes[0]) }));
   return { origin: location.origin, fields };
-}`;
+};
 // Types into the boxes found when the user was asked, only if the frame is still on that site and every box is still in
 // the page; a password goes only into a box that still hides it.
-const TYPE = `function (origin, texts, kinds, ...boxes) {
+export function TYPE(origin, texts, kinds, ...boxes) {
   if (location.origin !== origin) return { moved: location.origin };
+  // The companion extension cannot pass boxes in, so its own world in the frame holds the ones the find picked.
+  if (!boxes.length) boxes = globalThis.wired;
   if (!boxes.every((e) => e.isConnected)) return { reason: "The page changed after you were asked, so nothing was typed." };
   if (boxes.some((e, i) => kinds[i] === "password" && e.type !== "password")) {
     return { reason: "The password box no longer hides what is typed, so nothing was typed." };
@@ -80,24 +84,24 @@ const TYPE = `function (origin, texts, kinds, ...boxes) {
     e.dispatchEvent(new Event("change", { bubbles: true }));
   }
   return {};
-}`;
+}
 // Clicks the submit button of the box's form, as some sites ignore a synthetic Enter; false when there is none to click.
-const SUBMIT = `function (origin) {
+export function SUBMIT(origin, box = globalThis.wired.at(-1)) {
   if (location.origin !== origin) return true;
-  const button = this.form && [...this.form.elements].find((e) => e.type === "submit" && !e.disabled);
+  const button = box.form && [...box.form.elements].find((e) => e.type === "submit" && !e.disabled);
   button?.click();
   return Boolean(button);
-}`;
+}
 // Finds inputs still holding a typed secret, and empties them when asked.
-const HELD = `(origin, secrets, empty) => {
+export const HELD = (origin, secrets, empty) => {
   if (location.origin !== origin) return 0;
   const held = [...document.querySelectorAll("input")].filter((e) => secrets.includes(e.value));
   if (empty) held.forEach((e) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, ""));
   return held.length;
-}`;
-const PROBE = `() => ({ active: document.activeElement?.tagName === "INPUT", focus: document.hasFocus() })`;
+};
+export const PROBE = () => ({ active: document.activeElement?.tagName === "INPUT", focus: document.hasFocus() });
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const failed = (reason) => ({ status: "failed", reason, filled: [] });
 
@@ -136,7 +140,11 @@ async function wire(browser, tab, wanted, options) {
 // The frame where the agent left the cursor: the tab itself, or a frame inside it, even one from another site.
 async function focusedFrame(browser) {
   const all = await frames(browser);
-  const probes = await Promise.all(all.map(async (frame) => ({ ...frame, ...(await evaluate(browser, frame, PROBE)) })));
+  return pickFocused(await Promise.all(all.map(async (frame) => ({ ...frame, ...(await evaluate(browser, frame, PROBE)) }))));
+}
+
+// Of each frame's answer to PROBE, the one frame with a box holding the cursor.
+export function pickFocused(probes) {
   const typing = probes.filter((probe) => probe.active);
   const picked = typing.length > 1 ? typing.filter((probe) => probe.focus) : typing;
   if (picked.length !== 1) return { reason: "No box is selected. Click into the box, then ask again with --focused." };
@@ -194,9 +202,9 @@ export function fill(browser, config, values) {
 }
 
 // What goes into one box of a field: the whole answer, one digit of a split code, or one picked character.
-function piece(field, text, index, positions) {
+export function piece(count, text, index, positions) {
   if (positions) return text[positions[index] - 1];
-  return field.boxes.length > 1 ? text[index] : text;
+  return count > 1 ? text[index] : text;
 }
 
 async function typeWired(browser, config, values) {
@@ -205,7 +213,7 @@ async function typeWired(browser, config, values) {
   const here = await evaluate(browser, frame, "() => location.origin");
   if (here !== config.origin) return failed(`The page left ${config.origin} for ${here}.`);
   const plan = config.fields.flatMap((field) => field.boxes.map((node, i) => ({
-    node, kind: field.kind, text: piece(field, values[field.kind], i, config.characters),
+    node, kind: field.kind, text: piece(field.boxes.length, values[field.kind], i, config.characters),
   })));
   if (plan.some((box) => box.text === undefined)) return failed("The answer is shorter than the boxes it has to fill.");
   const quiet = await requests(browser);
@@ -213,7 +221,7 @@ async function typeWired(browser, config, values) {
   const boxes = await Promise.all(plan.map((box) => resolve(browser, frame, contextId, box.node)));
   if (boxes.includes(undefined)) return failed("The page changed after you were asked, so nothing was typed.");
   const args = [config.origin, plan.map((box) => box.text), plan.map((box) => box.kind)].map((value) => ({ value }));
-  const params = { functionDeclaration: TYPE, executionContextId: contextId, returnByValue: true };
+  const params = { functionDeclaration: String(TYPE), executionContextId: contextId, returnByValue: true };
   const { result } = await browser.send("Runtime.callFunctionOn", {
     ...params, arguments: [...args, ...boxes.map((objectId) => ({ objectId }))],
   }, frame.sessionId);
@@ -224,7 +232,7 @@ async function typeWired(browser, config, values) {
   if (config.fields.length > 1) await quiet();
   await submit(browser, frame, config.origin, boxes.at(-1));
   const secrets = plan.filter((box) => box.kind !== "username").map((box) => box.text);
-  const cleared = await settle(browser, frame, config.origin, secrets);
+  const cleared = await settle((empty) => evaluate(browser, frame, HELD, config.origin, secrets, empty));
   return { status: "filled", filled: config.fields.map((field) => field.kind), ...(cleared && { cleared: true }) };
 }
 
@@ -243,17 +251,19 @@ async function requests(browser) {
   };
 }
 
-// Page snapshots show what a password box holds, so nothing typed may still sit in the page when the agent looks.
-async function settle(browser, frame, origin, secrets) {
+// Page snapshots show what a password box holds, so nothing typed may still sit in the page when the agent looks; held
+// runs HELD in the frame.
+export async function settle(held) {
   for (const deadline = Date.now() + SETTLE_MS; Date.now() < deadline; await sleep(POLL_MS)) {
-    if (!((await evaluate(browser, frame, HELD, origin, secrets, false)) ?? 1)) return false;
+    if (!((await held(false)) ?? 1)) return false;
   }
-  return Boolean(await evaluate(browser, frame, HELD, origin, secrets, true));
+  return Boolean(await held(true));
 }
 
 // Presses Enter only when the box's form has no button to click; a page that already moved on gets nothing.
 async function submit(browser, frame, origin, box) {
-  const params = { functionDeclaration: SUBMIT, objectId: box, arguments: [{ value: origin }], returnByValue: true };
+  const args = [{ value: origin }, { objectId: box }];
+  const params = { functionDeclaration: String(SUBMIT), objectId: box, arguments: args, returnByValue: true };
   const { result } = await browser.send("Runtime.callFunctionOn", params, frame.sessionId);
   if (result?.value !== false) return;
   const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };

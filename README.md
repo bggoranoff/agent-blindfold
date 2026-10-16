@@ -164,7 +164,7 @@ What it does not protect against:
 npm test
 ```
 
-This runs every kind of login against local fixtures, in a headless Chrome (`$CHROME`, or the usual install paths) with a throwaway profile: two-step, a swapped box, a moved tab, a form that ignores Enter, one that never submits, a box in another site's frame, a password refused by a text box, picked characters, the login dialog and an emailed link. It then runs them all again through the companion extension, which needs Chrome for Testing or Chromium as `$CHROME`, since Google Chrome ignores `--load-extension`. Without one, that run is skipped.
+This runs every kind of login against local fixtures, in a headless Chrome (`$CHROME`, or the usual install paths) with a throwaway profile: two-step, a swapped box, a moved tab, a form that ignores Enter, one that never submits, a box in another site's frame, a password refused by a text box, picked characters, the login dialog and an emailed link. It then runs them all again through the companion extension, with another extension's hidden frame in every page as password managers add, which needs Chrome for Testing or Chromium as `$CHROME`, since Google Chrome ignores `--load-extension`. Without one, that run is skipped.
 
 If agent-blindfold keeps a password out of your agent's context, a ⭐ helps others find it.
 
