@@ -39,7 +39,13 @@ It is one Node script with no dependencies, packaged as an [Agent Skill](https:/
 
 ## Install
 
-Paste the prompt for your setup into your agent: Claude Code, Codex or another one with a shell. It installs everything, then runs a test sign-in with you on a public test site.
+For an agent that browses in a Chromium with a DevTools port, the [skills](https://skills.sh) CLI installs it in one line:
+
+```sh
+npx skills add bggoranoff/agent-blindfold
+```
+
+Or paste the prompt for your setup into your agent: Claude Code, Codex or another one with a shell. It installs everything, then runs a test sign-in with you on a public test site. For your own Chrome, use the prompt, since it also sets up the companion extension.
 
 ### Agent in your own Chrome
 
