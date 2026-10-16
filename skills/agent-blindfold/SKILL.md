@@ -40,7 +40,8 @@ The last line is `{"status": ..., "filled": [...], ...}`.
   - Signed in: carry on.
   - It asks for something more, such as the password after the email, or a code: back to step 1.
   - Wrong password, or `"cleared": true` with no error showing: back to step 1, and tell the user what the site said.
-  - A CAPTCHA, a passkey or an approval in another app: ask the user to do it, then look again.
+  - A passkey or security key: in the user's own Chrome (`--cdp extension`), click the page's button for it so their device asks them, such as for Touch ID, and tell them to approve it. In a browser of yours, ask the user to do it. Then look again.
+  - A CAPTCHA or an approval in another app: ask the user to do it, then look again.
 - `failed`, `cancelled` or `expired`: tell the user the `reason` in one line and stop. If `ask` itself says what to do instead, such as clicking into a box, do that and ask again.
 
 ## Rules

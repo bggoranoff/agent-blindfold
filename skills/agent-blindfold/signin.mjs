@@ -3,11 +3,11 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { json } from "node:stream/consumers";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -22,6 +22,7 @@ const USAGE = `Usage:
   signin.mjs ask --dialog <url> [--tab <text>] [--wait] ...
   signin.mjs wait <id>
   signin.mjs install [<browser profile folder>]
+  signin.mjs setup
 
 Without <fields>, ask finds the login boxes the page shows now. <fields> is a comma list of username, password,
 code and secret, to ask for only those.`;
@@ -177,6 +178,23 @@ async function install(profile) {
   say(1, `Chrome can now start the agent-blindfold extension's helper (${manifest}).
 Now load the extension once: open chrome://extensions, turn on Developer mode, click Load unpacked and pick ${unpacked}
 To remove it later, remove the extension and delete ${manifest} and ${wrapper}.`);
+}
+
+// Copies the package out of npm's cache to ~/.agent-blindfold, where the README's own-Chrome install clones it, since agents and the browser keep paths into it.
+async function setup() {
+  const home = join(homedir(), ".agent-blindfold");
+  const root = join(dirname(SELF), "..", "..");
+  const skill = basename(dirname(SELF));
+  if (existsSync(join(home, ".git"))) fail(`${home} is a git clone: update it with git -C ${home} pull instead.`);
+  if (root !== home) cpSync(root, home, { recursive: true });
+  for (const skills of [join(homedir(), ".claude", "skills"), join(homedir(), ".agents", "skills")]) {
+    mkdirSync(skills, { recursive: true });
+    const link = join(skills, skill);
+    if (lstatSync(link, { throwIfNoEntry: false })?.isSymbolicLink()) rmSync(link);
+    symlinkSync(join(home, "skills", skill), link, "junction");
+  }
+  say(1, `Installed to ${home} and linked the ${skill} skill for Claude Code and Codex.
+For your own Chrome, also run: node ${join(home, "skills", skill, "signin.mjs")} install`);
 }
 
 async function serve() {
@@ -523,6 +541,6 @@ const { values: options, positionals: [command, argument] } = parseArgs({
     minutes: { type: "string", default: "10" },
   },
 });
-const COMMANDS = { ask, wait, serve, install };
+const COMMANDS = { ask, wait, serve, install, setup };
 if (!COMMANDS[command] || (command === "wait" && !argument)) fail(USAGE);
 await COMMANDS[command](argument, options).catch((error) => fail(error.message));

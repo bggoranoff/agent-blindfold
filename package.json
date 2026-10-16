@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "description": "Let a browser agent sign in with a login the user types on a one-time page. The agent never sees it.",
   "license": "MIT",
+  "repository": "github:bggoranoff/agent-blindfold",
   "type": "module",
+  "bin": { "agent-blindfold": "skills/agent-blindfold/signin.mjs" },
+  "files": ["skills"],
   "engines": {
     "node": ">=22"
   },
