@@ -36,8 +36,15 @@ const ENTER = (origin) => {
   }
 };
 
-// Runs one of the page functions in a frame, in this extension's own world, which the page's scripts cannot reach;
-// undefined when the frame is gone or refuses it.
+// The tab's last step, so the next waits for it: another find must never land between a fill's own calls into the page.
+const queues = new Map();
+function serial(tab, step) {
+  const next = (queues.get(tab) ?? Promise.resolve()).then(step, step);
+  queues.set(tab, next);
+  return next;
+}
+
+// Runs a page function in this extension's own world in a frame; undefined when the frame is gone or refuses it.
 async function run(tab, frame, func, ...args) {
   const results = await chrome.scripting.executeScript({ target: { tabId: tab, frameIds: [frame] }, func, args }).catch(() => []);
   return results[0]?.result;
@@ -112,10 +119,13 @@ async function answerDialog(config, values) {
   };
   chrome.tabs.onUpdated.addListener(watch);
   chrome.webRequest.onAuthRequired.addListener(reply, { urls: ["<all_urls>"], tabId: config.target }, ["asyncBlocking"]);
-  await chrome.tabs.update(config.target, { url: config.dialog });
-  await Promise.race([loaded, sleep(LOAD_MS)]);
-  chrome.tabs.onUpdated.removeListener(watch);
-  chrome.webRequest.onAuthRequired.removeListener(reply);
+  try {
+    await chrome.tabs.update(config.target, { url: config.dialog });
+    await Promise.race([loaded, sleep(LOAD_MS)]);
+  } finally {
+    chrome.tabs.onUpdated.removeListener(watch);
+    chrome.webRequest.onAuthRequired.removeListener(reply);
+  }
   if (asked === 1) return { status: "filled", filled: ["username", "password"] };
   return failed(asked ? "The site turned that username and password down." : `${config.dialog} did not ask for a login.`);
 }
@@ -130,9 +140,9 @@ const STEPS = {
     const page = await chrome.tabs.get(tab).catch(() => undefined);
     if (!page) return { reason: "The browser tab is gone." };
     const handle = crypto.randomUUID();
-    const found = kind === "boxes"
-      ? await wire(page, wanted, options, handle)
-      : await TARGETS[kind](undefined, page, wanted, options);
+    const found = await serial(tab, () => (kind === "boxes"
+      ? wire(page, wanted, options, handle)
+      : TARGETS[kind](undefined, page, wanted, options)));
     if (found.reason) return found;
     const characters = options.characters?.split(",").map(Number);
     asks.set(handle, { ...found, target: tab, dialog: options.dialog, characters });
@@ -144,7 +154,7 @@ const STEPS = {
     asks.delete(handle);
     if (!config) return failed("The page changed after you were asked, so nothing was typed.");
     const mode = config.dialog ? answerDialog : values.link ? openLink : typeKept;
-    return mode(config, values, handle);
+    return serial(config.target, () => mode(config, values, handle));
   },
 };
 
