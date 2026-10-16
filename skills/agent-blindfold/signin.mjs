@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -189,8 +189,9 @@ async function setup() {
   if (root !== home) cpSync(root, home, { recursive: true });
   for (const skills of [join(homedir(), ".claude", "skills"), join(homedir(), ".agents", "skills")]) {
     mkdirSync(skills, { recursive: true });
-    rmSync(join(skills, skill), { force: true });
-    symlinkSync(join(home, "skills", skill), join(skills, skill), "junction");
+    const link = join(skills, skill);
+    if (lstatSync(link, { throwIfNoEntry: false })?.isSymbolicLink()) rmSync(link);
+    symlinkSync(join(home, "skills", skill), link, "junction");
   }
   say(1, `Installed to ${home} and linked the ${skill} skill for Claude Code and Codex.
 For your own Chrome, also run: node ${join(home, "skills", skill, "signin.mjs")} install`);
