@@ -22,11 +22,12 @@ const OTHER_WORKER = `setInterval(async () => {
   const pages = (await chrome.debugger.getTargets()).filter((target) => target.type === "page" && target.url.startsWith("http"));
   pages.forEach((page) => chrome.debugger.attach({ targetId: page.id }, "1.3").catch(() => {}));
 }, 300);`;
+// Google Chrome 137 and later ignore --load-extension, so the extension run never picks it on its own.
 const CHROMES = [
   process.env.CHROME,
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  !EXTENSION && "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  "/usr/bin/google-chrome",
+  !EXTENSION && "/usr/bin/google-chrome",
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
 ];
