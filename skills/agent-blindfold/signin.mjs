@@ -180,16 +180,17 @@ Now load the extension once: open chrome://extensions, turn on Developer mode, c
 To remove it later, remove the extension and delete ${manifest} and ${wrapper}.`);
 }
 
-// Copies the package out of npm's cache to the folder the README's clone uses, since agents and the browser keep paths into it.
+// Copies the package out of npm's cache to ~/.agent-blindfold, where the README's own-Chrome install clones it, since agents and the browser keep paths into it.
 async function setup() {
   const home = join(homedir(), ".agent-blindfold");
+  const root = join(dirname(SELF), "..", "..");
   const skill = basename(dirname(SELF));
   if (existsSync(join(home, ".git"))) fail(`${home} is a git clone: update it with git -C ${home} pull instead.`);
-  cpSync(fileURLToPath(new URL("../..", import.meta.url)), home, { recursive: true });
+  if (root !== home) cpSync(root, home, { recursive: true });
   for (const skills of [join(homedir(), ".claude", "skills"), join(homedir(), ".agents", "skills")]) {
     mkdirSync(skills, { recursive: true });
     rmSync(join(skills, skill), { force: true });
-    symlinkSync(join(home, "skills", skill), join(skills, skill));
+    symlinkSync(join(home, "skills", skill), join(skills, skill), "junction");
   }
   say(1, `Installed to ${home} and linked the ${skill} skill for Claude Code and Codex.
 For your own Chrome, also run: node ${join(home, "skills", skill, "signin.mjs")} install`);
