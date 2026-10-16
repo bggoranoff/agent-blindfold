@@ -151,7 +151,8 @@ after(async () => {
   await exited;
   site?.server.close();
   other?.server.close();
-  if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+  // On Linux, Chrome's helper processes keep writing to the profile for a few seconds after the browser exits.
+  if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
 });
 
 test("a two-step login asks for the email, then the password, each in the page's own words, and no output holds either", SKIP, async () => {
