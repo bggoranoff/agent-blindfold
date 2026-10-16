@@ -9,7 +9,9 @@
   <a href="#install"><img src="https://img.shields.io/badge/works_with-Claude_Code_%7C_Codex-d97757?style=flat-square" alt="Works with Claude Code and Codex"></a>
   <a href="https://agentskills.io"><img src="https://img.shields.io/badge/Agent_Skill-compatible-3d3c39?style=flat-square" alt="Agent Skill compatible"></a>
   <img src="https://img.shields.io/badge/dependencies-zero-3d3c39?style=flat-square" alt="Zero dependencies">
+  <img src="https://img.shields.io/badge/node-%E2%89%A522-3d3c39?style=flat-square" alt="Node 22 or later">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3d3c39?style=flat-square" alt="MIT license"></a>
+  <a href="https://github.com/bggoranoff/agent-blindfold/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/bggoranoff/agent-blindfold/test.yml?branch=main&label=tests&style=flat-square" alt="Tests"></a>
 </p>
 
 <p align="center">
