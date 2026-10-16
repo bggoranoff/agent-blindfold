@@ -1,0 +1,17 @@
+{
+  "name": "agent-blindfold",
+  "displayName": "Agent Blindfold",
+  "version": "0.1.0",
+  "description": "Let your browser agent sign in to websites, 2FA included, without your password, code or sign-in link ever passing through it.",
+  "author": {
+    "name": "Boris Goranov",
+    "url": "https://github.com/bggoranoff"
+  },
+  "homepage": "https://github.com/bggoranoff/agent-blindfold",
+  "repository": "https://github.com/bggoranoff/agent-blindfold",
+  "license": "MIT",
+  "keywords": ["login", "password", "2fa", "browser", "password-manager", "security"],
+  "icon": "./docs/icon.svg",
+  "documentationUrl": "https://github.com/bggoranoff/agent-blindfold#readme",
+  "supportUrl": "https://github.com/bggoranoff/agent-blindfold/issues"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "agent-blindfold",
+  "description": "Agent Blindfold, a skill that signs your browser agent in without it seeing your password.",
+  "owner": {
+    "name": "Boris Goranov"
+  },
+  "plugins": [
+    {
+      "name": "agent-blindfold",
+      "source": "./",
+      "description": "Let your browser agent sign in to websites, 2FA included, without your password, code or sign-in link ever passing through it."
+    }
+  ]
+}
