@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.svg">
-    <img src="docs/banner-light.svg" alt="agent-signin: your agent signs in, it never sees the password" width="100%">
+    <img src="docs/banner-light.svg" alt="agent-blindfold: your agent signs in, it never sees the password" width="100%">
   </picture>
 </p>
 
@@ -24,7 +24,7 @@ Let your browser agent sign in to websites, 2FA included, without your password,
 
 ## Why
 
-A browser agent that hits a login today either stops and hands the job back to you, or asks you to paste the password into the chat. A pasted password goes to the model and stays in the transcript, and so does the 2FA code after it. agent-signin gets the agent signed in without it ever holding the secret.
+A browser agent that hits a login today either stops and hands the job back to you, or asks you to paste the password into the chat. A pasted password goes to the model and stays in the transcript, and so does the 2FA code after it. agent-blindfold gets the agent signed in without it ever holding the secret.
 
 ## How it works
 
@@ -46,14 +46,14 @@ For an agent on your computer that browses in your everyday Chrome, such as Clau
 <summary><b>Copy the install prompt</b></summary>
 
 ```text
-Install agent-signin from https://github.com/bggoranoff/agent-signin, so you can sign in to websites in my own Chrome without ever seeing my passwords or codes.
+Install agent-blindfold from https://github.com/bggoranoff/agent-blindfold, so you can sign in to websites in my own Chrome without ever seeing my passwords or codes.
 
 1. Check that `node -v` is 22 or later. If it isn't, stop and tell me.
-2. Clone the repo to ~/.agent-signin, or run `git -C ~/.agent-signin pull` if it is already there.
-3. Link the skill for Claude Code and Codex: run `mkdir -p ~/.claude/skills ~/.agents/skills`, then `ln -sfn ~/.agent-signin/skills/agent-signin ~/.claude/skills/agent-signin` and the same for ~/.agents/skills.
-4. If you are Codex, write this rule to ~/.codex/rules/agent-signin.rules, with my real home folder in the path: prefix_rule(pattern = ["node", "<home>/.agent-signin/skills/agent-signin/signin.mjs"], decision = "allow")
-5. Run `node ~/.agent-signin/skills/agent-signin/signin.mjs install`. Assume my browser is Google Chrome unless I have said otherwise. For another Chromium browser, pass its profile folder in quotes as the argument, such as `install "$HOME/Library/Application Support/BraveSoftware/Brave-Browser"`. Show me the step it prints for loading the extension, and wait until I say I have done it.
-6. Test it with me. Open https://the-internet.herokuapp.com/login in my own everyday Chrome, not in a separate browser of yours. Use your Claude in Chrome tool if you have one, or else `open -a "Google Chrome" <url>` on a Mac or `google-chrome <url>` on Linux, with my browser's name if it is another one. Tell me a sign-in window is opening, and that the site's public test login is tomsmith / SuperSecretPassword!. Run `node ~/.agent-signin/skills/agent-signin/signin.mjs ask --cdp extension --tab the-internet.herokuapp.com`, and show me the `url` it prints in case no window shows up. Then run `node ~/.agent-signin/skills/agent-signin/signin.mjs wait <id>` with a 10-minute timeout. Its last line must have `"status":"filled"`, and the page must then say "You logged into a secure area!". Tell me whether it worked, and if the status is anything else, the `reason` it gives.
+2. Clone the repo to ~/.agent-blindfold, or run `git -C ~/.agent-blindfold pull` if it is already there.
+3. Link the skill for Claude Code and Codex: run `mkdir -p ~/.claude/skills ~/.agents/skills`, then `ln -sfn ~/.agent-blindfold/skills/agent-blindfold ~/.claude/skills/agent-blindfold` and the same for ~/.agents/skills.
+4. If you are Codex, write this rule to ~/.codex/rules/agent-blindfold.rules, with my real home folder in the path: prefix_rule(pattern = ["node", "<home>/.agent-blindfold/skills/agent-blindfold/signin.mjs"], decision = "allow")
+5. Run `node ~/.agent-blindfold/skills/agent-blindfold/signin.mjs install`. Assume my browser is Google Chrome unless I have said otherwise. For another Chromium browser, pass its profile folder in quotes as the argument, such as `install "$HOME/Library/Application Support/BraveSoftware/Brave-Browser"`. Show me the step it prints for loading the extension, and wait until I say I have done it.
+6. Test it with me. Open https://the-internet.herokuapp.com/login in my own everyday Chrome, not in a separate browser of yours. Use your Claude in Chrome tool if you have one, or else `open -a "Google Chrome" <url>` on a Mac or `google-chrome <url>` on Linux, with my browser's name if it is another one. Tell me a sign-in window is opening, and that the site's public test login is tomsmith / SuperSecretPassword!. Run `node ~/.agent-blindfold/skills/agent-blindfold/signin.mjs ask --cdp extension --tab the-internet.herokuapp.com`, and show me the `url` it prints in case no window shows up. Then run `node ~/.agent-blindfold/skills/agent-blindfold/signin.mjs wait <id>` with a 10-minute timeout. Its last line must have `"status":"filled"`, and the page must then say "You logged into a secure area!". Tell me whether it worked, and if the status is anything else, the `reason` it gives.
 ```
 
 </details>
@@ -66,22 +66,22 @@ For an agent that runs elsewhere and browses in a Chromium with a DevTools port,
 <summary><b>Copy the install prompt</b></summary>
 
 ```text
-Install agent-signin from https://github.com/bggoranoff/agent-signin on this machine, so you can sign in to websites in your browser with logins I enter on my phone, without ever seeing them.
+Install agent-blindfold from https://github.com/bggoranoff/agent-blindfold on this machine, so you can sign in to websites in your browser with logins I enter on my phone, without ever seeing them.
 
 1. Check that `node -v` is 22 or later. If it isn't, install Node 22 or later, or stop and tell me if you can't.
-2. Clone the repo to ~/agent-signin, or run `git -C ~/agent-signin pull` if it is already there. Then link the skill. For Claude Code run `mkdir -p ~/.claude/skills && ln -sfn ~/agent-signin/skills/agent-signin ~/.claude/skills/agent-signin`, and for Codex the same with ~/.agents/skills.
-3. If you are Codex, write this rule to ~/.codex/rules/agent-signin.rules, with the real home folder in the path: prefix_rule(pattern = ["node", "<home>/agent-signin/skills/agent-signin/signin.mjs"], decision = "allow")
+2. Clone the repo to ~/agent-blindfold, or run `git -C ~/agent-blindfold pull` if it is already there. Then link the skill. For Claude Code run `mkdir -p ~/.claude/skills && ln -sfn ~/agent-blindfold/skills/agent-blindfold ~/.claude/skills/agent-blindfold`, and for Codex the same with ~/.agents/skills.
+3. If you are Codex, write this rule to ~/.codex/rules/agent-blindfold.rules, with the real home folder in the path: prefix_rule(pattern = ["node", "<home>/agent-blindfold/skills/agent-blindfold/signin.mjs"], decision = "allow")
 4. Find your browser's DevTools endpoint: an http:// address where `curl -s <address>/json/version` answers with JSON. Try http://127.0.0.1:9222 first. Otherwise, find the port in the `--remote-debugging-port` flag of the browser's process, or in your browser tool's settings. If several browsers have one, use the one you drive. If it is not 127.0.0.1:9222, set CDP_URL to that http:// address for future sessions, for Claude Code under "env" in ~/.claude/settings.json, creating the file or keeping what is already in it. Pass it on your commands in this session too. If all you have is a wss:// address from a hosted browser service, stop and tell me: that is not supported.
 5. Unless SIGNIN_PUBLIC_URL is set, make sure `cloudflared` is installed, from your package manager or https://github.com/cloudflare/cloudflared/releases.
-6. Test it with me. Open https://the-internet.herokuapp.com/login in your browser. Run `node ~/agent-signin/skills/agent-signin/signin.mjs ask --tab the-internet.herokuapp.com`, adding `--tunnel` unless SIGNIN_PUBLIC_URL is set. Send me the `url` it prints, and tell me the site's public test login is tomsmith / SuperSecretPassword!. Then run `node ~/agent-signin/skills/agent-signin/signin.mjs wait <id>` with a 10-minute timeout. Its last line must have `"status":"filled"`, and the page must then say "You logged into a secure area!". Tell me whether it worked, and if the status is anything else, the `reason` it gives.
+6. Test it with me. Open https://the-internet.herokuapp.com/login in your browser. Run `node ~/agent-blindfold/skills/agent-blindfold/signin.mjs ask --tab the-internet.herokuapp.com`, adding `--tunnel` unless SIGNIN_PUBLIC_URL is set. Send me the `url` it prints, and tell me the site's public test login is tomsmith / SuperSecretPassword!. Then run `node ~/agent-blindfold/skills/agent-blindfold/signin.mjs wait <id>` with a 10-minute timeout. Its last line must have `"status":"filled"`, and the page must then say "You logged into a secure area!". Tell me whether it worked, and if the status is anything else, the `reason` it gives.
 ```
 
 </details>
 
 To install by hand:
 
-1. Clone the repo and link `skills/agent-signin` into your agent's skills folder.
-2. For your own Chrome, run `signin.mjs install`, then load `skills/agent-signin/extension` with Load unpacked in `chrome://extensions`.
+1. Clone the repo and link `skills/agent-blindfold` into your agent's skills folder.
+2. For your own Chrome, run `signin.mjs install`, then load `skills/agent-blindfold/extension` with Load unpacked in `chrome://extensions`.
 
 Otherwise the skill uses the browser your agent already drives, such as Playwright MCP or Browser Use. If that browser's DevTools port is not 9222, set `CDP_URL`.
 
@@ -155,7 +155,7 @@ npm test
 
 This runs every kind of login against local fixtures, in a headless Chrome (`$CHROME`, or the usual install paths) with a throwaway profile: two-step, a swapped box, a moved tab, a form that ignores Enter, one that never submits, a box in another site's frame, a password refused by a text box, picked characters, the login dialog and an emailed link. It then runs them all again through the companion extension, which needs Chrome for Testing or Chromium as `$CHROME`, since Google Chrome ignores `--load-extension`. Without one, that run is skipped.
 
-If agent-signin keeps a password out of your agent's context, a ⭐ helps others find it.
+If agent-blindfold keeps a password out of your agent's context, a ⭐ helps others find it.
 
 ## License
 

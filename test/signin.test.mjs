@@ -11,9 +11,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-const SCRIPT = fileURLToPath(new URL("../skills/agent-signin/signin.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../skills/agent-blindfold/signin.mjs", import.meta.url));
 // Set by extension.test.mjs, which runs every login again through the companion extension instead of the DevTools port.
-const EXTENSION = process.env.AGENT_SIGNIN_TEST_EXTENSION && fileURLToPath(new URL("../skills/agent-signin/extension", import.meta.url));
+const EXTENSION = process.env.AGENT_BLINDFOLD_TEST_EXTENSION && fileURLToPath(new URL("../skills/agent-blindfold/extension", import.meta.url));
 // Another extension that stays attached to every tab, as Claude in Chrome does while it drives one.
 const OTHER_MANIFEST = {
   manifest_version: 3, name: "other", version: "1", permissions: ["debugger"], background: { service_worker: "other.js" },
@@ -115,7 +115,7 @@ async function until(check) {
 
 // Loads the companion extension, with its host known to this profile alone, and another extension attached to every tab.
 function install() {
-  // The host's socket goes in the profile too, away from any agent-signin the user runs for real.
+  // The host's socket goes in the profile too, away from any agent-blindfold the user runs for real.
   process.env.TMPDIR = profile;
   execFileSync(process.execPath, [SCRIPT, "install", profile]);
   const peer = join(profile, "other");
@@ -127,7 +127,8 @@ function install() {
 
 before(async () => {
   if (!CHROME) return;
-  profile = mkdtempSync(join(tmpdir(), "agent-signin-test-"));
+  // macOS caps a socket path at 103 characters, and the extension run puts the host socket in this folder.
+  profile = mkdtempSync(join(tmpdir(), "abf-"));
   const extensions = EXTENSION ? install() : [];
   // Port 0 and a fresh profile: never the user's own browser on 9222.
   chrome = spawn(CHROME, ["--headless=new", "--use-mock-keychain", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run",
@@ -137,7 +138,7 @@ before(async () => {
     if (Date.now() > deadline || chrome.exitCode !== null) throw new Error("Chrome did not start.");
   }
   cdp = `http://127.0.0.1:${readFileSync(portFile, "utf8").split("\n")[0]}`;
-  const socket = join(profile, "agent-signin", "extension.sock");
+  const socket = join(profile, "agent-blindfold", "extension.sock");
   for (const deadline = Date.now() + 15000; EXTENSION && !existsSync(socket); await sleep(100)) {
     if (Date.now() > deadline) throw new Error("Chrome did not load the extension; run this with Chrome for Testing or Chromium.");
   }
@@ -289,10 +290,10 @@ test("an emailed sign-in link opens in the agent's tab, and anything but a web l
 });
 
 test("the extension takes only its own steps, never a DevTools command", { skip: SKIP.skip || (!EXTENSION && "DevTools port run") }, async () => {
-  const socket = createConnection(join(profile, "agent-signin", "extension.sock"));
+  const socket = createConnection(join(profile, "agent-blindfold", "extension.sock"));
   await new Promise((resolve) => socket.once("connect", resolve));
   socket.write(`${JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "document.cookie" } })}\n`);
   const line = await new Promise((resolve) => createInterface({ input: socket }).once("line", resolve));
   socket.end();
-  assert.deepEqual(JSON.parse(line), { status: "failed", reason: "agent-signin has no step undefined.", filled: [] });
+  assert.deepEqual(JSON.parse(line), { status: "failed", reason: "agent-blindfold has no step undefined.", filled: [] });
 });

@@ -1,11 +1,11 @@
-// Chrome starts this for the agent-signin extension; it carries messages between the extension and signin.mjs.
+// Chrome starts this for the agent-blindfold extension; it carries messages between the extension and signin.mjs.
 import { mkdirSync, rmSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-const DIRECTORY = join(tmpdir(), "agent-signin");
+const DIRECTORY = join(tmpdir(), "agent-blindfold");
 const SOCKET = join(DIRECTORY, "extension.sock");
 const RETRY_MS = 5000;
 const clients = new Map();
