@@ -1,4 +1,4 @@
-// The browser half of agent-signin: finds the login boxes in a tab and fills them, over whatever DevTools connection it is
+// The browser half of agent-blindfold: finds the login boxes in a tab and fills them, over whatever DevTools connection it is
 // given. signin.mjs runs it over a DevTools port, and the companion extension runs it inside the user's own Chrome.
 
 export const POLL_MS = 100;
@@ -160,7 +160,7 @@ const flatten = (tree) => (tree ? [tree.frame, ...(tree.childFrames ?? []).flatM
 
 // A fresh isolated world in the frame, where the page's own scripts cannot see or change what runs.
 async function world(browser, frame) {
-  const params = { frameId: frame.id, worldName: "agent-signin" };
+  const params = { frameId: frame.id, worldName: "agent-blindfold" };
   return (await browser.send("Page.createIsolatedWorld", params, frame.sessionId)).executionContextId;
 }
 

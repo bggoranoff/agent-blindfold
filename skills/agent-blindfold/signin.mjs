@@ -37,10 +37,10 @@ const RULES = [
   [(fields, o) => o.dialog && fields.length && fields.join() !== "username,password", "--dialog asks for the username and password itself."],
 ];
 const LABELS = { username: "Email or username", password: "Password", code: "Verification code", secret: "Answer", link: "Sign-in link from your email" };
-const STATE = join(tmpdir(), "agent-signin");
+const STATE = join(tmpdir(), "agent-blindfold");
 // Where the companion extension's native host, extension/host.mjs, listens for the user's own Chrome.
 const EXTENSION = join(STATE, "extension.sock");
-const HOST = "io.github.bggoranoff.agent_signin";
+const HOST = "io.github.bggoranoff.agent_blindfold";
 const EXTENSION_ID = "ahgehaammfeiemempinnlmodhpjdaohm";
 // Google Chrome's profile folder, under the home folder, where Chrome looks for native messaging hosts.
 const CHROME_PROFILES = { darwin: "Library/Application Support/Google/Chrome", linux: ".config/google-chrome" };
@@ -173,8 +173,8 @@ async function install(profile) {
   mkdirSync(hosts, { recursive: true });
   writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${join(unpacked, "host.mjs")}"\n`, { mode: 0o755 });
   const allowed = [`chrome-extension://${EXTENSION_ID}/`];
-  writeFileSync(manifest, JSON.stringify({ name: HOST, description: "agent-signin", type: "stdio", path: wrapper, allowed_origins: allowed }));
-  say(1, `Chrome can now start the agent-signin extension's helper (${manifest}).
+  writeFileSync(manifest, JSON.stringify({ name: HOST, description: "agent-blindfold", type: "stdio", path: wrapper, allowed_origins: allowed }));
+  say(1, `Chrome can now start the agent-blindfold extension's helper (${manifest}).
 Now load the extension once: open chrome://extensions, turn on Developer mode, click Load unpacked and pick ${unpacked}
 To remove it later, remove the extension and delete ${manifest} and ${wrapper}.`);
 }
@@ -310,7 +310,7 @@ function extension(request) {
     socket.on("close", () => reject(new Error("The browser stopped answering.")));
     // The line reader passes the socket's errors on, and an error nobody hears crashes the process.
     createInterface({ input: socket }).on("error", () => {
-      reject(new Error("No agent-signin extension answers in Chrome. Install it as the README says."));
+      reject(new Error("No agent-blindfold extension answers in Chrome. Install it as the README says."));
     }).once("line", (line) => {
       resolve(JSON.parse(line));
       socket.end();

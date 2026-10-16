@@ -1,7 +1,7 @@
 // Finds and fills login boxes in a tab of this Chrome for signin.mjs, which reaches this worker through the host.
 import { failed, fill, TARGETS } from "./browser.mjs";
 
-const HOST = "io.github.bggoranoff.agent_signin";
+const HOST = "io.github.bggoranoff.agent_blindfold";
 // What each find chose, kept here so a fill types only into boxes a find picked, and only once.
 const asks = new Map();
 
@@ -56,7 +56,7 @@ const STEPS = {
 };
 
 async function answer({ client, step, ...request }, from) {
-  const run = STEPS[step] ?? (async () => failed(`agent-signin has no step ${step}.`));
+  const run = STEPS[step] ?? (async () => failed(`agent-blindfold has no step ${step}.`));
   const result = await run(request).catch((error) => failed(error.message));
   from.postMessage({ client, ...result });
 }

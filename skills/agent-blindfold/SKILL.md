@@ -1,13 +1,13 @@
 ---
-name: agent-signin
+name: agent-blindfold
 description: Sign your browser in to a website with a login the user enters in a sign-in window or on a one-time page, so you never see their password, code or sign-in link. Use when a page in your browser asks for a username, password, verification or 2FA code, PIN, security answer or emailed sign-in link, when the browser shows its own login dialog, or when the user is signed out of a site you need.
 ---
 
-# Agent sign-in
+# Agent Blindfold
 
 You never handle the user's secrets. `signin.mjs`, next to this file, shows the user a sign-in window, or a one-time page, that their password manager can fill. It types what they enter into your browser tab itself and submits. You only learn which fields it typed. Run it as shown here; there is no need to read it or check your setup first.
 
-It reaches your Chromium over its DevTools port: `$CDP_URL`, or `http://127.0.0.1:9222`. If you browse in the user's own Chrome through an extension, such as Claude in Chrome, add `--cdp extension`: it then goes through agent-signin's companion extension, which the user installs once. It works only in those browsers. If you browse with something else, such as a built-in browser, open the site with the tools that drive one of them instead, such as a Playwright MCP server connected to it, and sign in there.
+It reaches your Chromium over its DevTools port: `$CDP_URL`, or `http://127.0.0.1:9222`. If you browse in the user's own Chrome through an extension, such as Claude in Chrome, add `--cdp extension`: it then goes through agent-blindfold's companion extension, which the user installs once. It works only in those browsers. If you browse with something else, such as a built-in browser, open the site with the tools that drive one of them instead, such as a Playwright MCP server connected to it, and sign in there.
 
 ## 1. Pick the command
 
