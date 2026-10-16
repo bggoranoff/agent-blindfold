@@ -78,6 +78,14 @@ Install agent-blindfold from https://github.com/bggoranoff/agent-blindfold on th
 
 </details>
 
+In Claude Code you can also install it as a plugin, which suits an agent on a server:
+
+```text
+/plugin install agent-blindfold --marketplace bggoranoff/agent-blindfold
+```
+
+For your own Chrome, use the prompt above instead. The extension needs a folder that stays put, and a plugin update moves it.
+
 To install by hand:
 
 1. Clone the repo and link `skills/agent-blindfold` into your agent's skills folder.
