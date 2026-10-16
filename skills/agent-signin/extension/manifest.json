@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "agent-signin",
+  "version": "0.1.0",
+  "description": "Lets agent-signin find and fill login boxes in a tab of this Chrome with what you entered on its one-time page.",
+  "minimum_chrome_version": "126",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtDxrZkrNki7vB1x7ljYrJvqLpJSdbGlozLKSiz54VHtmG3J/mAzKDzw8Re3KWFCQpat2yaZq1a6bKmYwJwQD0BwYiChOTS2l5gSMXWS70t0wty7Kd8cpgGZhAItGegSCCrjjmrHLJD4TaOGOOeAEcKbto6v0if/MEl5nI5Q0fY5m4sMC7ot3UTaFDDr8G7DznfRbNU+0pRfbkAAEl1l24u8aNl+HXovXHJNPufbXrhh0HWXaCRJjImq8djN8pkbH9fVWwX6jq84TGkesgI9T6buPJxZUxtktSf4ldVlw9KIK79NCqTYwbUb1jzpeZf5DPZJYFs1uh4x+9yoAxc9JTQIDAQAB",
+  "permissions": ["alarms", "debugger", "nativeMessaging"],
+  "background": { "service_worker": "background.js", "type": "module" }
+}

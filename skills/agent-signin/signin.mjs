@@ -1,23 +1,27 @@
 #!/usr/bin/env node
 // Hand a login from the user to the agent's browser on a one-time page, without the agent ever seeing it.
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { createConnection } from "node:net";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { json } from "node:stream/consumers";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { failed, fill as fillTab, POLL_MS, TARGETS } from "./extension/browser.mjs";
 
 const USAGE = `Usage:
   signin.mjs ask [<fields>] [--tab <text>] [--focused] [--characters <n,n,...>] [--label <text>] [--wait]
-                 [--cdp <url>] [--public <https url> | --tunnel] [--port <n>] [--minutes <n>]
+                 [--cdp <url> | --cdp extension] [--public <https url> | --tunnel] [--port <n>] [--minutes <n>]
   signin.mjs ask link [--tab <text>] [--wait] ...
   signin.mjs ask --dialog <url> [--tab <text>] [--wait] ...
   signin.mjs wait <id>
+  signin.mjs install [<browser profile folder>]
 
 Without <fields>, ask finds the login boxes the page shows now. <fields> is a comma list of username, password,
 code and secret, to ask for only those.`;
@@ -34,107 +38,16 @@ const RULES = [
 ];
 const LABELS = { username: "Email or username", password: "Password", code: "Verification code", secret: "Answer", link: "Sign-in link from your email" };
 const STATE = join(tmpdir(), "agent-signin");
+// Where the companion extension's native host, extension/host.mjs, listens for the user's own Chrome.
+const EXTENSION = join(STATE, "extension.sock");
+const HOST = "io.github.bggoranoff.agent_signin";
+const EXTENSION_ID = "ahgehaammfeiemempinnlmodhpjdaohm";
+// Google Chrome's profile folder, under the home folder, where Chrome looks for native messaging hosts.
+const CHROME_PROFILES = { darwin: "Library/Application Support/Google/Chrome", linux: ".config/google-chrome" };
 const PUBLIC_PORT = 8769;
-const POLL_MS = 100;
-const SETTLE_MS = 10000;
-const LOAD_MS = 15000;
 const COMMAND_MS = 10000;
 const TUNNEL_MS = 30000;
-// Sites check a box when it loses focus and hold back a submit until that check is done, so a submit waits for the
-// page's requests to go quiet, for at most as long as a person's pause.
-const PAUSE_MS = 1000;
-const QUIET_MS = 150;
-const OPENERS = { darwin: "open", win32: "explorer" };
-const CHROMIUM = /chrome|chromium|edge|brave|vivaldi/i;
-const WINDOW = ["--window-size=360,420"];
 
-// Finds the boxes to ask for, when the user is asked, and keeps them in globalThis.wired for DevTools references.
-const DETECT = `(how, wanted, positions) => {
-  // Password managers' and sites' helper fields render but are aria-hidden; no person can see or reach them.
-  const shown = (e) => e.getClientRects().length && !e.disabled && !e.readOnly && !e.closest("[aria-hidden=true]")
-    && getComputedStyle(e).visibility !== "hidden" && !["hidden", "submit", "button", "checkbox", "radio"].includes(e.type);
-  const inputs = [...document.querySelectorAll("input")].filter(shown);
-  const hint = (e) => [e.name, e.id, e.placeholder, e.getAttribute("aria-label"), e.autocomplete].join(" ").toLowerCase();
-  const label = (e) => (e.labels?.[0]?.innerText || e.getAttribute("aria-label") || e.placeholder || "").trim().slice(0, 80);
-  const find = () => {
-    const passwords = inputs.filter((e) => e.type === "password");
-    if (passwords.length > 1) return { reason: "The page shows more than one password box. Click into the right one and ask with --focused." };
-    const [password] = passwords;
-    const boxes = inputs.filter((e) => e.maxLength === 1);
-    const code = inputs.find((e) => e.autocomplete === "one-time-code")
-      || inputs.find((e) => e !== password && /otp|code|pin|verif|2fa|mfa|token/.test(hint(e)));
-    const beforePassword = inputs.slice(0, Math.max(inputs.indexOf(password), 0))
-      .filter((e) => ["text", "email", "tel"].includes(e.type));
-    const username = inputs.find((e) => /username|email/.test(e.autocomplete)) || inputs.find((e) => e.type === "email")
-      || inputs.find((e) => e !== code && e !== password && /user|email|login|account|identifier/.test(hint(e)))
-      || beforePassword.pop();
-    const all = { username: username && [username], password: password && [password], code: boxes.length >= 4 ? boxes : code && [code] };
-    // A code box only counts on its own page, so a sign-in form with a stray "code" box asks for no code.
-    const kinds = wanted.length ? wanted : username || password ? ["username", "password"] : ["code"];
-    const missing = wanted.filter((kind) => !all[kind]);
-    if (missing.length) return { reason: \`No \${missing.join(" or ")} box shows on this page.\` };
-    const fields = kinds.filter((kind) => all[kind]).map((kind) => ({ kind, boxes: all[kind] }));
-    return fields.length ? fields : { reason: "No login box shows on this page. Click into the box and ask with --focused." };
-  };
-  const focused = () => {
-    const box = document.activeElement;
-    if (!inputs.includes(box)) return { reason: "No box is selected. Click into the box, then ask again." };
-    if (wanted[0] === "password" && box.type !== "password") return { reason: "The selected box is not a password box." };
-    return [{ kind: wanted[0], boxes: [box] }];
-  };
-  const characters = () => {
-    // A password's characters go only into boxes that hide them; a memorable word's may go into boxes that show.
-    const fit = wanted[0] === "password" ? inputs.filter((e) => e.type === "password") : inputs;
-    const boxes = [fit.filter((e) => e.maxLength === 1), fit.filter((e) => e.type === "password")]
-      .find((list) => list.length === positions.length);
-    return boxes ? [{ kind: wanted[0], boxes }] : { reason: \`No \${positions.length} boxes for the characters show on this page.\` };
-  };
-  const picked = { find, focused, characters }[how]();
-  if (picked.reason) return picked;
-  globalThis.wired = picked.flatMap((field) => field.boxes);
-  const fields = picked.map(({ kind, boxes }) => ({ kind, count: boxes.length, label: boxes.length > 1 ? "" : label(boxes[0]) }));
-  return { origin: location.origin, fields };
-}`;
-// Types into the boxes found when the user was asked, only if the frame is still on that site and every box is still in
-// the page; a password goes only into a box that still hides it.
-const TYPE = `function (origin, texts, kinds, ...boxes) {
-  if (location.origin !== origin) return { moved: location.origin };
-  if (!boxes.every((e) => e.isConnected)) return { reason: "The page changed after you were asked, so nothing was typed." };
-  if (boxes.some((e, i) => kinds[i] === "password" && e.type !== "password")) {
-    return { reason: "The password box no longer hides what is typed, so nothing was typed." };
-  }
-  const set = (e, text) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, text);
-  for (const [i, e] of boxes.entries()) {
-    e.focus();
-    e.select();
-    // The page's own focus handlers have run by now, and could have moved the cursor or revealed the box.
-    const safe = e.isConnected && document.activeElement === e && (kinds[i] !== "password" || e.type === "password");
-    if (!safe) {
-      boxes.slice(0, i).forEach((typed) => set(typed, ""));
-      return { reason: "The page moved the cursor while typing, so what was typed was taken out again." };
-    }
-    if (document.execCommand("insertText", false, texts[i])) continue;
-    set(e, texts[i]);
-    e.dispatchEvent(new Event("input", { bubbles: true }));
-    e.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-  return {};
-}`;
-// Clicks the submit button of the box's form, as some sites ignore a synthetic Enter; false when there is none to click.
-const SUBMIT = `function (origin) {
-  if (location.origin !== origin) return true;
-  const button = this.form && [...this.form.elements].find((e) => e.type === "submit" && !e.disabled);
-  button?.click();
-  return Boolean(button);
-}`;
-// Finds inputs still holding a typed secret, and empties them when asked.
-const HELD = `(origin, secrets, empty) => {
-  if (location.origin !== origin) return 0;
-  const held = [...document.querySelectorAll("input")].filter((e) => secrets.includes(e.value));
-  if (empty) held.forEach((e) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, ""));
-  return held.length;
-}`;
-const PROBE = `() => ({ active: document.activeElement?.tagName === "INPUT", focus: document.hasFocus() })`;
 
 // Written synchronously: the process often exits right after, and a pending write to an agent's pipe would be lost.
 const say = (fd, text) => writeSync(fd, `${text}\n`);
@@ -144,7 +57,6 @@ function fail(message) {
   process.exit(2);
 }
 
-const failed = (reason) => ({ status: "failed", reason, filled: [] });
 
 function readState(id) {
   const path = join(STATE, `${id}.json`);
@@ -169,6 +81,7 @@ async function pages(cdp) {
 const bare = (url) => url.split(/[?#]/)[0];
 
 async function pickTab(cdp, text = "") {
+  if (cdp === "extension") return extensionTab(text);
   const all = await pages(cdp);
   const matches = all.filter((tab) => tab.url.includes(text));
   if (matches.length !== 1) {
@@ -176,6 +89,13 @@ async function pickTab(cdp, text = "") {
       + all.map((tab) => bare(tab.url)).join("\n"));
   }
   return matches[0];
+}
+
+// The user's own Chrome holds all their tabs, so the extension names only the one tab that matches.
+async function extensionTab(text) {
+  const tab = await extension({ step: "tab", text });
+  if (!tab.id) fail(`${tab.count} tabs match ${JSON.stringify(text)}. Pass --tab with part of one URL.`);
+  return tab;
 }
 
 async function ask(fields, options) {
@@ -188,12 +108,14 @@ async function ask(fields, options) {
   const top = new URL(options.dialog ?? tab.url).origin;
   if (!/^https?:/.test(top)) fail(`The tab is on ${bare(tab.url)}, not a website.`);
   const kind = wanted.includes("link") ? "link" : options.dialog ? "dialog" : "boxes";
-  const target = await TARGETS[kind](tab, wanted, options);
-  const id = randomBytes(6).toString("base64url");
+  const target = await prepare(tab, kind, wanted, options);
+  const id = randomBytes(6).toString("hex");
+  const local = !options.public && !options.tunnel;
+  const native = process.platform === "darwin" && !process.env.BROWSER;
   const config = {
     id, top, ...target, label: options.label, characters: options.characters?.split(",").map(Number),
     dialog: options.dialog, cdp: options.cdp, target: tab.id, token: randomBytes(32).toString("base64url"),
-    public: options.public, tunnel: options.tunnel, minutes: Number(options.minutes),
+    public: options.public, tunnel: options.tunnel, minutes: Number(options.minutes), native,
     port: Number(options.port ?? (options.public ? PUBLIC_PORT : 0)),
   };
   // The token goes over stdin rather than argv, where `ps` would show it.
@@ -204,124 +126,24 @@ async function ask(fields, options) {
   const state = await settled(id, (s) => s.url || s.status !== "waiting", Date.now() + 2 * TUNNEL_MS + 5000);
   say(1, JSON.stringify({ id, ...state }));
   if (state.status !== "waiting") process.exit(1);
-  if (!options.public && !options.tunnel) openPage(state.url);
+  if (local && !native) openPage(state.url);
   if (options.wait) await wait(id);
 }
 
-// What each kind of ask fills: the boxes the page shows, a link to open, or the browser's own login dialog.
-const TARGETS = {
-  link: (tab) => ({ frame: tab.id, origin: new URL(tab.url).origin, fields: [{ kind: "link" }] }),
-  dialog: (tab, wanted, options) => ({
-    frame: tab.id, origin: new URL(options.dialog).origin, fields: [{ kind: "username" }, { kind: "password" }],
-  }),
-  boxes: wire,
-};
-
-// Finds the boxes to fill now, in the tab or in the frame the agent clicked into, and keeps DevTools references to
-// them, so the fill types into these boxes and nowhere else.
-async function wire(tab, wanted, options) {
-  const browser = await connect(tab.webSocketDebuggerUrl);
-  const frame = options.focused ? await focusedFrame(browser) : { id: tab.id };
-  const contextId = await world(browser, frame);
-  const how = options.characters ? "characters" : options.focused ? "focused" : "find";
-  const positions = options.characters?.split(",").map(Number);
-  const args = [how, wanted, positions].map((arg) => JSON.stringify(arg)).join(", ");
-  const found = await run(browser, frame, contextId, `(${DETECT})(${args})`);
-  if (!found) fail("The page did not answer. Try again once it has loaded.");
+// What the fill will need: over a DevTools port, the boxes themselves; in the user's own Chrome, the extension keeps them
+// and hands back a handle.
+async function prepare(tab, kind, wanted, options) {
+  const { focused, characters, label, dialog } = options;
+  const found = options.cdp === "extension"
+    ? await extension({ step: "find", tab: tab.id, kind, wanted, options: { focused, characters, label, dialog } })
+    : await port(tab, (browser) => TARGETS[kind](browser, tab, wanted, options));
   if (found.reason) fail(found.reason);
-  const total = found.fields.reduce((sum, field) => sum + field.count, 0);
-  const nodes = await Promise.all(Array.from({ length: total }, (_, i) => backendNode(browser, frame, contextId, i)));
-  browser.close();
-  let next = 0;
-  const fields = found.fields.map(({ kind, count, label }) => {
-    const boxes = nodes.slice(next, next + count);
-    next += count;
-    return { kind, label: (kind === "secret" && options.label) || label, boxes };
-  });
-  return { frame: frame.id, origin: found.origin, fields };
+  return found;
 }
 
-// The frame where the agent left the cursor: the tab itself, or a frame inside it, even one from another site.
-async function focusedFrame(browser) {
-  const all = await frames(browser);
-  const probes = await Promise.all(all.map(async (frame) => ({ ...frame, ...(await evaluate(browser, frame, PROBE)) })));
-  const typing = probes.filter((probe) => probe.active);
-  const picked = typing.length > 1 ? typing.filter((probe) => probe.focus) : typing;
-  if (picked.length !== 1) fail("No box is selected. Click into the box, then ask again with --focused.");
-  return picked[0];
-}
-
-// Every frame in the tab, with the DevTools session that can reach it; frames from other sites live in their own.
-async function frames(browser) {
-  const sessions = [undefined];
-  browser.on("Target.attachedToTarget", ({ sessionId, targetInfo }) => targetInfo.type === "iframe" && sessions.push(sessionId));
-  await browser.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
-  const trees = await Promise.all(sessions.map(async (sessionId) => {
-    const { frameTree } = await browser.send("Page.getFrameTree", {}, sessionId);
-    return flatten(frameTree).map((frame) => [frame.id, { id: frame.id, sessionId }]);
-  }));
-  // A frame from another site shows up in its parent's tree too, but only its own session can run code in it.
-  return [...new Map(trees.flat()).values()];
-}
-
-const flatten = (tree) => (tree ? [tree.frame, ...(tree.childFrames ?? []).flatMap(flatten)] : []);
-
-// A fresh isolated world in the frame, where the page's own scripts cannot see or change what runs.
-async function world(browser, frame) {
-  const params = { frameId: frame.id, worldName: "agent-signin" };
-  return (await browser.send("Page.createIsolatedWorld", params, frame.sessionId)).executionContextId;
-}
-
-async function run(browser, frame, contextId, expression) {
-  if (!contextId) return undefined;
-  const { result } = await browser.send("Runtime.evaluate", { expression, contextId, returnByValue: true }, frame.sessionId);
-  return result?.value;
-}
-
-async function evaluate(browser, frame, source, ...args) {
-  const contextId = await world(browser, frame);
-  return run(browser, frame, contextId, `(${source})(${args.map((arg) => JSON.stringify(arg)).join(", ")})`);
-}
-
-// A reference to a wired box that stays valid across DevTools connections for as long as the box exists.
-async function backendNode(browser, frame, contextId, index) {
-  const { result } = await browser.send("Runtime.evaluate", { expression: `globalThis.wired[${index}]`, contextId }, frame.sessionId);
-  const { node } = await browser.send("DOM.describeNode", { objectId: result.objectId }, frame.sessionId);
-  return node.backendNodeId;
-}
-
-async function resolve(browser, frame, contextId, backendNodeId) {
-  const { object } = await browser.send("DOM.resolveNode", { backendNodeId, executionContextId: contextId }, frame.sessionId);
-  return object?.objectId;
-}
-
-// A Chromium default browser shows the page as a small app window, which the page can close itself.
 function openPage(url) {
-  const plain = [process.env.BROWSER ?? OPENERS[process.platform] ?? "xdg-open", url];
-  const app = process.env.BROWSER ? null : DEFAULT_CHROMIUM[process.platform]?.(url);
-  const launch = ([command, ...args], fallback) => spawn(command, args, { detached: true, stdio: "ignore" })
-    .on("error", () => fallback && launch(fallback)).unref();
-  launch(app ?? plain, app && plain);
-}
-
-const DEFAULT_CHROMIUM = {
-  darwin: (url) => {
-    const handlers = shell("defaults", ["read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"]);
-    const bundle = handlers.match(/LSHandlerRoleAll = "?([\w.-]+)"?;\s*LSHandlerURLScheme = https;/)?.[1];
-    return CHROMIUM.test(bundle) && ["open", "-nb", bundle, "--args", `--app=${url}`, ...WINDOW];
-  },
-  linux: (url) => {
-    const name = shell("xdg-settings", ["get", "default-web-browser"]).trim().replace(/\.desktop$/, "");
-    return CHROMIUM.test(name) && [name, `--app=${url}`, ...WINDOW];
-  },
-};
-
-function shell(command, args) {
-  try {
-    return execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  } catch {
-    return "";
-  }
+  const opener = process.env.BROWSER ?? (process.platform === "win32" ? "explorer" : "xdg-open");
+  spawn(opener, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
 }
 
 async function settled(id, done, deadline) {
@@ -340,18 +162,36 @@ async function wait(id) {
   process.exit(state.status === "filled" ? 0 : 1);
 }
 
+// Lets the browser start the companion extension's host: a manifest in its NativeMessagingHosts folder, and a wrapper
+// beside it that pins this node, since the browser starts hosts without the user's PATH.
+async function install(profile) {
+  if (!profile && !CHROME_PROFILES[process.platform]) fail("Pass the browser's profile folder: install works on macOS and Linux.");
+  const hosts = join(profile ?? join(homedir(), CHROME_PROFILES[process.platform]), "NativeMessagingHosts");
+  const wrapper = join(hosts, `${HOST}.sh`);
+  const manifest = join(hosts, `${HOST}.json`);
+  const unpacked = fileURLToPath(new URL("./extension", import.meta.url));
+  mkdirSync(hosts, { recursive: true });
+  writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${join(unpacked, "host.mjs")}"\n`, { mode: 0o755 });
+  const allowed = [`chrome-extension://${EXTENSION_ID}/`];
+  writeFileSync(manifest, JSON.stringify({ name: HOST, description: "agent-signin", type: "stdio", path: wrapper, allowed_origins: allowed }));
+  say(1, `Chrome can now start the agent-signin extension's helper (${manifest}).
+Now load the extension once: open chrome://extensions, turn on Developer mode, click Load unpacked and pick ${unpacked}
+To remove it later, remove the extension and delete ${manifest} and ${wrapper}.`);
+}
+
 async function serve() {
   const config = JSON.parse(readFileSync(0, "utf8"));
   const kinds = config.fields.map((field) => field.kind);
   const save = (state) => writeState(config.id, { origin: config.origin, fields: kinds, ...state });
   const job = { busy: false };
-  let tunnel, over;
+  let tunnel, dialog, over;
   const finish = (state) => {
     if (over) return;
     over = true;
     job.busy = true;
     save(state);
     tunnel?.kill();
+    dialog?.kill();
     // A beat for the answer to reach the page, which may already have been closed mid-fill.
     setTimeout(() => process.exit(0), 500);
   };
@@ -362,11 +202,29 @@ async function serve() {
     if (config.tunnel) [tunnel, config.public] = await openTunnel(local);
     const expires = Date.now() + config.minutes * 60000;
     save({ status: "waiting", url: `${(config.public ?? local).replace(/\/$/, "")}/${config.token}`, expires });
+    if (config.native) dialog = prompt(config, finish, job);
     // A fill under way finishes, cleanup included, even when the link expires meanwhile.
     setTimeout(() => job.busy || finish({ status: "expired" }), expires - Date.now());
   } catch (error) {
     finish({ status: "failed", reason: error.message });
   }
+}
+
+// Asks in a window on this Mac as well as through the link, and the first answer wins; the window's answer comes back
+// over a pipe to this process alone.
+function prompt(config, finish, job) {
+  const dialog = spawn("osascript", ["-l", "JavaScript", "-e", DIALOG, JSON.stringify(form(config))],
+    { stdio: ["ignore", "pipe", "ignore"] });
+  const answered = async (values) => {
+    if (job.busy) return;
+    if (!values) return finish({ status: "cancelled" });
+    job.busy = true;
+    finish(await fill(config, values).catch(() => failed("The browser stopped answering.")));
+  };
+  // A Mac with no screen to show the window on can still be answered through a public link.
+  const unopened = () => config.public || finish(failed("The sign-in window did not open."));
+  json(dialog.stdout).then(answered, unopened);
+  return dialog;
 }
 
 async function openTunnel(local) {
@@ -432,115 +290,33 @@ function message(config, result) {
 }
 
 async function fill(config, values) {
+  if (config.cdp === "extension") return extension({ step: "fill", handle: config.handle, values });
   const tab = (await pages(config.cdp)).find((target) => target.id === config.target);
   if (!tab) return failed("The browser tab is gone.");
-  const browser = await connect(tab.webSocketDebuggerUrl);
-  const mode = config.dialog ? answerDialog : values.link ? openLink : typeWired;
-  return mode(browser, config, values).finally(browser.close);
+  return port(tab, (browser) => fillTab(browser, config, values));
 }
 
-// What goes into one box of a field: the whole answer, one digit of a split code, or one picked character.
-function piece(field, text, index, positions) {
-  if (positions) return text[positions[index] - 1];
-  return field.boxes.length > 1 ? text[index] : text;
+// One step over the tab's own DevTools WebSocket.
+async function port(tab, step) {
+  const browser = await connect(new WebSocket(tab.webSocketDebuggerUrl));
+  return step(browser).finally(browser.close);
 }
 
-async function typeWired(browser, config, values) {
-  const frame = (await frames(browser)).find((candidate) => candidate.id === config.frame);
-  if (!frame) return failed("The frame with the boxes is gone.");
-  const here = await evaluate(browser, frame, "() => location.origin");
-  if (here !== config.origin) return failed(`The page left ${config.origin} for ${here}.`);
-  const plan = config.fields.flatMap((field) => field.boxes.map((node, i) => ({
-    node, kind: field.kind, text: piece(field, values[field.kind], i, config.characters),
-  })));
-  if (plan.some((box) => box.text === undefined)) return failed("The answer is shorter than the boxes it has to fill.");
-  const quiet = await requests(browser);
-  const contextId = await world(browser, frame);
-  const boxes = await Promise.all(plan.map((box) => resolve(browser, frame, contextId, box.node)));
-  if (boxes.includes(undefined)) return failed("The page changed after you were asked, so nothing was typed.");
-  const args = [config.origin, plan.map((box) => box.text), plan.map((box) => box.kind)].map((value) => ({ value }));
-  const params = { functionDeclaration: TYPE, executionContextId: contextId, returnByValue: true };
-  const { result } = await browser.send("Runtime.callFunctionOn", {
-    ...params, arguments: [...args, ...boxes.map((objectId) => ({ objectId }))],
-  }, frame.sessionId);
-  const outcome = result?.value;
-  if (!outcome) return failed("The page changed after you were asked, so nothing was typed.");
-  if (outcome.moved) return failed(`The page left ${config.origin} for ${outcome.moved}.`);
-  if (outcome.reason) return failed(outcome.reason);
-  if (config.fields.length > 1) await quiet();
-  await submit(browser, frame, config.origin, boxes.at(-1));
-  const secrets = plan.filter((box) => box.kind !== "username").map((box) => box.text);
-  const cleared = await settle(browser, frame, config.origin, secrets);
-  return { status: "filled", filled: config.fields.map((field) => field.kind), ...(cleared && { cleared: true }) };
-}
-
-// Tracks the page's requests in flight; the function it returns waits until none has run for a moment.
-async function requests(browser) {
-  const open = new Set();
-  browser.on("Network.requestWillBeSent", ({ requestId }) => open.add(requestId));
-  browser.on("Network.loadingFinished", ({ requestId }) => open.delete(requestId));
-  browser.on("Network.loadingFailed", ({ requestId }) => open.delete(requestId));
-  await browser.send("Network.enable", {});
-  return async () => {
-    let calm = Date.now();
-    for (const deadline = calm + PAUSE_MS; Date.now() < deadline && Date.now() - calm < QUIET_MS; await sleep(25)) {
-      if (open.size) calm = Date.now();
-    }
-  };
-}
-
-// Page snapshots show what a password box holds, so nothing typed may still sit in the page when the agent looks.
-async function settle(browser, frame, origin, secrets) {
-  for (const deadline = Date.now() + SETTLE_MS; Date.now() < deadline; await sleep(POLL_MS)) {
-    if (!((await evaluate(browser, frame, HELD, origin, secrets, false)) ?? 1)) return false;
-  }
-  return Boolean(await evaluate(browser, frame, HELD, origin, secrets, true));
-}
-
-// Presses Enter only when the box's form has no button to click; a page that already moved on gets nothing.
-async function submit(browser, frame, origin, box) {
-  const params = { functionDeclaration: SUBMIT, objectId: box, arguments: [{ value: origin }], returnByValue: true };
-  const { result } = await browser.send("Runtime.callFunctionOn", params, frame.sessionId);
-  if (result?.value !== false) return;
-  const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
-  await browser.send("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
-  await browser.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
-}
-
-// Opens the link the site emailed in the agent's tab; it signs the tab in, wherever the link's tracking redirects go.
-async function openLink(browser, config, values) {
-  const url = URL.parse(values.link);
-  if (!["http:", "https:"].includes(url?.protocol)) return failed("That is not a web link.");
-  const { frameId, errorText } = await browser.send("Page.navigate", { url: url.href });
-  if (!frameId || errorText) return failed(errorText ?? "The link did not open.");
-  return { status: "filled", filled: ["link"] };
-}
-
-// Answers the browser's own login dialog (HTTP authentication), only for the origin the page named.
-async function answerDialog(browser, config, values) {
-  let asked = 0;
-  const ignore = () => {};
-  browser.on("Fetch.requestPaused", ({ requestId }) => browser.send("Fetch.continueRequest", { requestId }).catch(ignore));
-  browser.on("Fetch.authRequired", ({ requestId, request, authChallenge }) => {
-    const ours = authChallenge.source === "Server" && new URL(request.url).origin === config.origin;
-    // A second challenge means the site turned the first answer down, so it is not sent again.
-    const answer = ours && asked++ === 0;
-    const credentials = { response: "ProvideCredentials", username: values.username, password: values.password };
-    const authChallengeResponse = answer ? credentials : { response: "CancelAuth" };
-    browser.send("Fetch.continueWithAuth", { requestId, authChallengeResponse }).catch(ignore);
+// One step in a tab of the user's own Chrome, asked of the companion extension through its host's socket.
+function extension(request) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(EXTENSION);
+    socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
+    socket.on("error", () => reject(new Error("No agent-signin extension answers in Chrome. Install it as the README says.")));
+    socket.on("close", () => reject(new Error("The browser stopped answering.")));
+    createInterface({ input: socket }).once("line", (line) => {
+      resolve(JSON.parse(line));
+      socket.end();
+    });
   });
-  await browser.send("Fetch.enable", { handleAuthRequests: true });
-  await browser.send("Page.enable");
-  const loaded = new Promise((resolve) => browser.on("Page.loadEventFired", resolve));
-  await browser.send("Page.navigate", { url: config.dialog });
-  await Promise.race([loaded, sleep(LOAD_MS)]);
-  await browser.send("Fetch.disable");
-  if (asked === 1) return { status: "filled", filled: ["username", "password"] };
-  return failed(asked ? "The site turned that username and password down." : `${config.dialog} did not ask for a login.`);
 }
 
-async function connect(url) {
-  const socket = new WebSocket(url);
+async function connect(socket) {
   await new Promise((resolve, reject) => {
     socket.onopen = resolve;
     socket.onerror = reject;
@@ -574,19 +350,44 @@ async function connect(url) {
   return { send, on, close: () => socket.close() };
 }
 
-function page(response, config) {
-  const nonce = randomBytes(16).toString("base64");
+// What the page and the window both tell the user: the site that gets the answer, and what happens to it.
+function wording(config) {
   const host = new URL(config.origin).host;
   const top = new URL(config.top).host;
   const link = config.fields[0].kind === "link";
-  const hint = config.characters ? `<p class="sub">Only characters ${config.characters.join(", ")} are typed.</p>` : "";
+  return {
+    host,
+    sub: link ? "Your agent's browser will open it, signing in to" : "Your agent's browser will type this into",
+    inside: top === host ? "" : `inside ${top}`,
+    hint: config.characters ? `Only characters ${config.characters.join(", ")} are typed.` : "",
+    button: link ? "Open link" : "Sign in",
+  };
+}
+
+function form(config) {
+  const { host, sub, inside, hint, button } = wording(config);
+  const where = [host, inside].filter(Boolean).join(", ");
+  return {
+    title: `Sign in to ${host}`,
+    text: [`${sub} ${where}.`, hint].filter(Boolean).join(" "),
+    button,
+    fields: config.fields.map((field) => ({
+      kind: field.kind, label: field.label || LABELS[field.kind], secret: ["password", "secret"].includes(field.kind),
+    })),
+  };
+}
+
+function page(response, config) {
+  const nonce = randomBytes(16).toString("base64");
+  const { host, sub, inside, hint, button } = wording(config);
   const parts = {
     nonce,
     host,
-    sub: link ? "Your agent's browser will open it, signing in to" : "Your agent's browser will type this into",
-    inside: top === host ? "" : `<p class="sub">inside ${top}</p>`,
-    inputs: config.fields.map((field) => INPUTS[field.kind](escapeHtml(field.label || LABELS[field.kind]))).join("") + hint,
-    button: link ? "Open link" : "Sign in",
+    sub,
+    inside: inside && `<p class="sub">${inside}</p>`,
+    inputs: config.fields.map((field) => INPUTS[field.kind](escapeHtml(field.label || LABELS[field.kind]))).join("")
+      + (hint && `<p class="sub">${hint}</p>`),
+    button,
   };
   response.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
@@ -620,6 +421,47 @@ const INPUTS = {
     autocapitalize="none" autocorrect="off" spellcheck="false" required>`,
 };
 
+// A native window with a labelled box per field; prints the answers as JSON, or null when cancelled.
+const DIALOG = `ObjC.import("Cocoa");
+function run([input]) {
+  const form = JSON.parse(input);
+  const app = $.NSApplication.sharedApplication;
+  app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+  // Paste reaches a box only through an Edit menu's shortcut.
+  const menu = $.NSMenu.alloc.init, edit = $.NSMenu.alloc.init, item = $.NSMenuItem.alloc.init;
+  [["Cut", "cut:", "x"], ["Copy", "copy:", "c"], ["Paste", "paste:", "v"], ["Select All", "selectAll:", "a"]]
+    .forEach(([title, action, key]) => edit.addItemWithTitleActionKeyEquivalent(title, action, key));
+  item.submenu = edit;
+  menu.addItem(item);
+  app.mainMenu = menu;
+  const alert = $.NSAlert.alloc.init;
+  alert.messageText = form.title;
+  alert.informativeText = form.text;
+  alert.addButtonWithTitle(form.button);
+  alert.addButtonWithTitle("Cancel");
+  const rows = form.fields.length;
+  const view = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 260, rows * 50));
+  const boxes = form.fields.map((field, i) => {
+    const y = (rows - 1 - i) * 50;
+    const label = $.NSTextField.labelWithString(field.label);
+    label.frame = $.NSMakeRect(0, y + 26, 260, 17);
+    const box = (field.secret ? $.NSSecureTextField : $.NSTextField).alloc.initWithFrame($.NSMakeRect(0, y + 2, 260, 22));
+    view.addSubview(label);
+    view.addSubview(box);
+    return box;
+  });
+  alert.accessoryView = view;
+  alert.window.initialFirstResponder = boxes[0];
+  alert.window.autorecalculatesKeyViewLoop = true;
+  app.activateIgnoringOtherApps(true);
+  for (;;) {
+    if (Number(alert.runModal) !== Number($.NSAlertFirstButtonReturn)) return "null";
+    const values = boxes.map((box) => box.stringValue.js);
+    if (values.every(Boolean)) return JSON.stringify(Object.fromEntries(form.fields.map((field, i) => [field.kind, values[i]])));
+    alert.informativeText = form.text + " Fill in every box first.";
+  }
+}`;
+
 const PAGE = `<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Sign in</title>
 <style>
@@ -629,7 +471,7 @@ const PAGE = `<!doctype html><html lang="en"><meta charset="utf-8">
 main{max-width:340px;margin:0 auto;padding:18px 16px 10px}h1{font-size:19px;margin:0;text-align:center}
 p{text-align:center;margin:2px 0}.sub{color:var(--muted);font-size:13px}.host{font-weight:700;font-size:16px;overflow-wrap:anywhere}
 form{margin-top:8px}label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
-input{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
+input{width:100%;font:inherit;font-size:16px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
 button{display:block;width:100%;font:inherit;font-weight:600;padding:9px;margin-top:14px;border:0;border-radius:8px;background:var(--fg);color:var(--bg)}
 button.quiet{background:none;color:var(--muted);margin-top:2px;padding:6px}[hidden]{display:none}
 .secret{position:relative}.secret input{padding-right:40px}
@@ -655,10 +497,6 @@ form.onsubmit = (event) => {
   send(location.pathname, body);
 };
 cancel.onclick = () => send(location.pathname + "/cancel", "{}");
-// Fit the small window to the form and centre it on its screen; a browser tab ignores both.
-const height = Math.ceil(document.querySelector("main").getBoundingClientRect().bottom) + outerHeight - innerHeight;
-resizeTo(outerWidth, height);
-moveTo(screen.availLeft + (screen.availWidth - outerWidth) / 2, screen.availTop + (screen.availHeight - height) / 2);
 for (const eye of document.querySelectorAll(".eye")) eye.onclick = () => {
   const input = eye.previousElementSibling, show = input.type === "password";
   input.type = show ? "text" : "password";
@@ -683,6 +521,6 @@ const { values: options, positionals: [command, argument] } = parseArgs({
     minutes: { type: "string", default: "10" },
   },
 });
-const COMMANDS = { ask, wait, serve };
+const COMMANDS = { ask, wait, serve, install };
 if (!COMMANDS[command] || (command === "wait" && !argument)) fail(USAGE);
 await COMMANDS[command](argument, options).catch((error) => fail(error.message));

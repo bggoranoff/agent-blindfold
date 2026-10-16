@@ -1,20 +1,33 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const SCRIPT = fileURLToPath(new URL("../skills/agent-signin/signin.mjs", import.meta.url));
+// Set by extension.test.mjs, which runs every login again through the companion extension instead of the DevTools port.
+const EXTENSION = process.env.AGENT_SIGNIN_TEST_EXTENSION && fileURLToPath(new URL("../skills/agent-signin/extension", import.meta.url));
+// Another extension that stays attached to every tab, as Claude in Chrome does while it drives one.
+const OTHER_MANIFEST = {
+  manifest_version: 3, name: "other", version: "1", permissions: ["debugger"], background: { service_worker: "other.js" },
+};
+const OTHER_WORKER = `setInterval(async () => {
+  const pages = (await chrome.debugger.getTargets()).filter((target) => target.type === "page" && target.url.startsWith("http"));
+  pages.forEach((page) => chrome.debugger.attach({ targetId: page.id }, "1.3").catch(() => {}));
+}, 300);`;
+// Google Chrome 137 and later ignore --load-extension, so the extension run never picks it on its own.
 const CHROMES = [
   process.env.CHROME,
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  !EXTENSION && "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  "/usr/bin/google-chrome",
+  !EXTENSION && "/usr/bin/google-chrome",
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
 ];
@@ -59,7 +72,8 @@ function fixture() {
 
 async function run(...args) {
   const env = { ...process.env, BROWSER: "true" };
-  const { stdout, stderr } = await promisify(execFile)(process.execPath, [SCRIPT, ...args, "--cdp", cdp], { env })
+  const browser = EXTENSION ? "extension" : cdp;
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, [SCRIPT, ...args, "--cdp", browser], { env })
     .catch((error) => error);
   return { output: stdout + stderr, result: stdout ? JSON.parse(stdout) : null };
 }
@@ -99,17 +113,34 @@ async function until(check) {
   assert.fail("timed out");
 }
 
+// Loads the companion extension, with its host known to this profile alone, and another extension attached to every tab.
+function install() {
+  // The host's socket goes in the profile too, away from any agent-signin the user runs for real.
+  process.env.TMPDIR = profile;
+  execFileSync(process.execPath, [SCRIPT, "install", profile]);
+  const peer = join(profile, "other");
+  mkdirSync(peer);
+  writeFileSync(join(peer, "manifest.json"), JSON.stringify(OTHER_MANIFEST));
+  writeFileSync(join(peer, "other.js"), OTHER_WORKER);
+  return [`--load-extension=${EXTENSION},${peer}`];
+}
+
 before(async () => {
   if (!CHROME) return;
   profile = mkdtempSync(join(tmpdir(), "agent-signin-test-"));
+  const extensions = EXTENSION ? install() : [];
   // Port 0 and a fresh profile: never the user's own browser on 9222.
-  chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run",
-    "--no-default-browser-check", "about:blank"], { stdio: "ignore" });
+  chrome = spawn(CHROME, ["--headless=new", "--use-mock-keychain", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run",
+    "--no-default-browser-check", ...extensions, "about:blank"], { stdio: "ignore" });
   const portFile = join(profile, "DevToolsActivePort");
   for (const deadline = Date.now() + 15000; !existsSync(portFile); await sleep(100)) {
     if (Date.now() > deadline || chrome.exitCode !== null) throw new Error("Chrome did not start.");
   }
   cdp = `http://127.0.0.1:${readFileSync(portFile, "utf8").split("\n")[0]}`;
+  const socket = join(profile, "agent-signin", "extension.sock");
+  for (const deadline = Date.now() + 15000; EXTENSION && !existsSync(socket); await sleep(100)) {
+    if (Date.now() > deadline) throw new Error("Chrome did not load the extension; run this with Chrome for Testing or Chromium.");
+  }
   [site, other] = await Promise.all([fixture(), fixture()]);
 });
 
@@ -119,7 +150,7 @@ after(async () => {
   await exited;
   site?.server.close();
   other?.server.close();
-  if (profile) rmSync(profile, { recursive: true, force: true });
+  if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
 });
 
 test("a two-step login asks for the email, then the password, each in the page's own words, and no output holds either", SKIP, async () => {
@@ -255,4 +286,13 @@ test("an emailed sign-in link opens in the agent's tab, and anything but a web l
   const waited = await answer(await run("ask", "link", "--tab", "/check-email"), { link: `${site.url}/welcome?token=abc` });
   assert.equal(waited.result.status, "filled");
   await until(async () => (await evaluate(tab, "location.href")).endsWith("/welcome?token=abc"));
+});
+
+test("the extension takes only its own steps, never a DevTools command", { skip: SKIP.skip || (!EXTENSION && "DevTools port run") }, async () => {
+  const socket = createConnection(join(profile, "agent-signin", "extension.sock"));
+  await new Promise((resolve) => socket.once("connect", resolve));
+  socket.write(`${JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "document.cookie" } })}\n`);
+  const line = await new Promise((resolve) => createInterface({ input: socket }).once("line", resolve));
+  socket.end();
+  assert.deepEqual(JSON.parse(line), { status: "failed", reason: "agent-signin has no step undefined.", filled: [] });
 });
