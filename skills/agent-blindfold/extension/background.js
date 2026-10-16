@@ -15,20 +15,22 @@ chrome.runtime.onStartup.addListener(() => {});
 
 const bare = (url) => url.split(/[?#]/)[0];
 
-// The boxes a find picked stay in the frame, in this extension's own world, under the find's handle.
-const KEEP = (handle) => {
-  (globalThis.kept ??= {})[handle] = globalThis.wired;
-};
+// Takes back the boxes DETECT kept in this extension's own world in the frame, if they are still this find's.
 const TAKE = (handle) => {
   globalThis.wired = globalThis.kept?.[handle];
-  delete globalThis.kept?.[handle];
+  globalThis.kept = undefined;
   return Boolean(globalThis.wired);
 };
-// Submits a form that has no button to click; a box outside any form gets the Enter key a person would press.
+// Submits as Enter would: a form with no submit button at all, or a box outside any form with the key itself.
 const ENTER = (origin) => {
   const box = globalThis.wired.at(-1);
   if (location.origin !== origin) return;
-  if (box.form) return box.form.requestSubmit();
+  if (box.form) {
+    // A submit button the site disabled holds the form back from Enter too.
+    const held = [...box.form.elements].some((e) => e.type === "submit");
+    if (!held) box.form.requestSubmit();
+    return;
+  }
   for (const type of ["keydown", "keypress", "keyup"]) {
     box.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, bubbles: true, cancelable: true }));
   }
@@ -42,13 +44,13 @@ async function run(tab, frame, func, ...args) {
 }
 
 // Finds the boxes to fill now, in the tab or in the frame the agent clicked into.
-async function wire(tab, wanted, options) {
+async function wire(tab, wanted, options, handle) {
   const frame = options.focused ? await focusedFrame(tab.id) : { frameId: 0 };
   if (frame.reason) return frame;
   const how = options.characters ? "characters" : options.focused ? "focused" : "find";
   // chrome.scripting refuses an undefined argument.
   const positions = options.characters?.split(",").map(Number) ?? null;
-  const found = await run(tab.id, frame.frameId, DETECT, how, wanted, positions);
+  const found = await run(tab.id, frame.frameId, DETECT, how, wanted, positions, handle);
   if (!found) return { reason: "The page did not answer. Try again once it has loaded." };
   if (found.reason) return found;
   const fields = found.fields.map(({ kind, count, label }) => ({ kind, count, label: (kind === "secret" && options.label) || label }));
@@ -101,17 +103,18 @@ async function answerDialog(config, values) {
     callback(credentials ? { authCredentials: credentials } : { cancel: true });
   };
   let started = false;
-  const loaded = new Promise((resolve) => {
-    const watch = (tab, change) => {
-      if (tab !== config.target) return;
-      started ||= change.status === "loading";
-      if (started && change.status === "complete") resolve(chrome.tabs.onUpdated.removeListener(watch));
-    };
-    chrome.tabs.onUpdated.addListener(watch);
-  });
+  let done;
+  const loaded = new Promise((resolve) => (done = resolve));
+  const watch = (tab, change) => {
+    if (tab !== config.target) return;
+    started ||= change.status === "loading";
+    if (started && change.status === "complete") done();
+  };
+  chrome.tabs.onUpdated.addListener(watch);
   chrome.webRequest.onAuthRequired.addListener(reply, { urls: ["<all_urls>"], tabId: config.target }, ["asyncBlocking"]);
   await chrome.tabs.update(config.target, { url: config.dialog });
   await Promise.race([loaded, sleep(LOAD_MS)]);
+  chrome.tabs.onUpdated.removeListener(watch);
   chrome.webRequest.onAuthRequired.removeListener(reply);
   if (asked === 1) return { status: "filled", filled: ["username", "password"] };
   return failed(asked ? "The site turned that username and password down." : `${config.dialog} did not ask for a login.`);
@@ -126,10 +129,11 @@ const STEPS = {
   find: async ({ tab, kind, wanted, options }) => {
     const page = await chrome.tabs.get(tab).catch(() => undefined);
     if (!page) return { reason: "The browser tab is gone." };
-    const found = kind === "boxes" ? await wire(page, wanted, options) : await TARGETS[kind](undefined, page, wanted, options);
-    if (found.reason) return found;
     const handle = crypto.randomUUID();
-    if (kind === "boxes") await run(tab, found.frame, KEEP, handle);
+    const found = kind === "boxes"
+      ? await wire(page, wanted, options, handle)
+      : await TARGETS[kind](undefined, page, wanted, options);
+    if (found.reason) return found;
     const characters = options.characters?.split(",").map(Number);
     asks.set(handle, { ...found, target: tab, dialog: options.dialog, characters });
     const fields = found.fields.map(({ kind: field, label }) => ({ kind: field, label }));

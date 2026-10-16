@@ -10,7 +10,7 @@ export const PAUSE_MS = 1000;
 const QUIET_MS = 150;
 
 // Finds the boxes to ask for, when the user is asked, and keeps them in globalThis.wired for the fill to reach.
-export const DETECT = (how, wanted, positions) => {
+export const DETECT = (how, wanted, positions, key) => {
   // Password managers' and sites' helper fields render but are aria-hidden; no person can see or reach them.
   const shown = (e) => e.getClientRects().length && !e.disabled && !e.readOnly && !e.closest("[aria-hidden=true]")
     && getComputedStyle(e).visibility !== "hidden" && !["hidden", "submit", "button", "checkbox", "radio"].includes(e.type);
@@ -53,6 +53,8 @@ export const DETECT = (how, wanted, positions) => {
   const picked = { find, focused, characters }[how]();
   if (picked.reason) return picked;
   globalThis.wired = picked.flatMap((field) => field.boxes);
+  // The companion extension keeps only its latest find's boxes, for that find's one fill.
+  if (key) globalThis.kept = { [key]: globalThis.wired };
   const fields = picked.map(({ kind, boxes }) => ({ kind, count: boxes.length, label: boxes.length > 1 ? "" : label(boxes[0]) }));
   return { origin: location.origin, fields };
 };
