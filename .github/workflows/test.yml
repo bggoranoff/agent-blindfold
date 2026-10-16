@@ -23,3 +23,7 @@ jobs:
       - run: npm test
         env:
           CHROME: ${{ steps.chrome.outputs.chrome-path }}
+      - if: failure()
+        run: |
+          ps -eo pid,ppid,pgid,etime,args | grep -iE 'chrome|node' | grep -v grep || true
+          for d in /tmp/abf-*/; do echo "== $d"; find "$d" -newer "$d" -maxdepth 3 | head -40; done
