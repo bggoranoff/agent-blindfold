@@ -2,8 +2,6 @@
 import { failed, fill, TARGETS } from "./browser.mjs";
 
 const HOST = "io.github.bggoranoff.agent_signin";
-// The open port keeps this worker, and the host Chrome started for it, alive while Chrome runs.
-const port = chrome.runtime.connectNative(HOST);
 // What each find chose, kept here so a fill types only into boxes a find picked, and only once.
 const asks = new Map();
 
@@ -57,8 +55,21 @@ const STEPS = {
   },
 };
 
-port.onMessage.addListener(async ({ client, step, ...request }) => {
+async function answer({ client, step, ...request }, from) {
   const run = STEPS[step] ?? (async () => failed(`agent-signin has no step ${step}.`));
-  const answer = await run(request).catch((error) => failed(error.message));
-  port.postMessage({ client, ...answer });
-});
+  const result = await run(request).catch((error) => failed(error.message));
+  from.postMessage({ client, ...result });
+}
+
+// The open port keeps this worker, and the host Chrome started for it, alive while Chrome runs.
+let port;
+function connect() {
+  port = chrome.runtime.connectNative(HOST);
+  port.onMessage.addListener(answer);
+  port.onDisconnect.addListener(() => (port = undefined));
+}
+
+// A host that exited or failed to start is retried each minute; the alarm also wakes this worker if Chrome stopped it.
+chrome.alarms.create("host", { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener(() => port || connect());
+connect();

@@ -1,12 +1,13 @@
 // Chrome starts this for the agent-signin extension; it carries messages between the extension and signin.mjs.
 import { mkdirSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 const DIRECTORY = join(tmpdir(), "agent-signin");
 const SOCKET = join(DIRECTORY, "extension.sock");
+const RETRY_MS = 5000;
 const clients = new Map();
 let next = 0;
 let input = Buffer.alloc(0);
@@ -31,13 +32,30 @@ process.stdin.on("data", (chunk) => {
 // Chrome closes the pipe when the extension lets go of the host.
 process.stdin.on("end", () => process.exit());
 
-mkdirSync(DIRECTORY, { recursive: true, mode: 0o700 });
-rmSync(SOCKET, { force: true });
-createServer((socket) => {
+const server = createServer((socket) => {
   const client = ++next;
   clients.set(client, socket);
   createInterface({ input: socket }).on("line", (line) => post({ client, ...JSON.parse(line) }));
   // A signin.mjs that exits mid-message must not take the host down with it.
   socket.on("error", () => {});
   socket.on("close", () => clients.delete(client));
-}).listen(SOCKET);
+});
+
+// Another Chrome profile's host may already serve the socket: this one waits for it to go, and only clears a dead one.
+function claim() {
+  server.once("error", async (error) => {
+    if (error.code !== "EADDRINUSE") throw error;
+    const live = await new Promise((resolve) => {
+      createConnection(SOCKET).on("connect", function () {
+        this.destroy();
+        resolve(true);
+      }).on("error", () => resolve(false));
+    });
+    if (!live) rmSync(SOCKET, { force: true });
+    setTimeout(claim, live ? RETRY_MS : 0);
+  });
+  server.listen(SOCKET);
+}
+
+mkdirSync(DIRECTORY, { recursive: true, mode: 0o700 });
+claim();
