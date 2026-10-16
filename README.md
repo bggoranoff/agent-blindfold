@@ -6,14 +6,14 @@
 </p>
 
 <p align="center">
-  <a href="#-install"><img src="https://img.shields.io/badge/works_with-Claude_Code_%7C_Codex-d97757?style=flat-square" alt="Works with Claude Code and Codex"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/works_with-Claude_Code_%7C_Codex-d97757?style=flat-square" alt="Works with Claude Code and Codex"></a>
   <a href="https://agentskills.io"><img src="https://img.shields.io/badge/Agent_Skill-compatible-3d3c39?style=flat-square" alt="Agent Skill compatible"></a>
   <img src="https://img.shields.io/badge/dependencies-zero-3d3c39?style=flat-square" alt="Zero dependencies">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3d3c39?style=flat-square" alt="MIT license"></a>
 </p>
 
 <p align="center">
-  <a href="#-install"><b>Install</b></a> · <a href="#-how-it-works"><b>How it works</b></a> · <a href="#-security"><b>Security</b></a>
+  <a href="#install"><b>Install</b></a> · <a href="#how-it-works"><b>How it works</b></a> · <a href="#security"><b>Security</b></a>
 </p>
 
 Let your browser agent sign in to websites, 2FA included, without your password, code or sign-in link ever passing through it.
@@ -22,7 +22,11 @@ Let your browser agent sign in to websites, 2FA included, without your password,
 
 <sub>A fake site, with the agent and its browser standing in for a server and an emulated iPhone-size browser for the phone. The links are real Cloudflare quick tunnels, with their start-up sped up 4×. The agent's lines are scripted; the commands and their output are real. [MP4](docs/demo-phone.mp4)</sub>
 
-## 🔐 How it works
+## Why
+
+A browser agent that hits a login today either stops and hands the job back to you, or asks you to paste the password into the chat. A pasted password goes to the model and stays in the transcript, and so does the 2FA code after it. agent-signin gets the agent signed in without it ever holding the secret.
+
+## How it works
 
 1. **The agent hits a login** and runs one command, instead of asking you for the password in chat.
 2. **You get a one-time link** on your phone, plus a small window if you are at the Mac the agent runs on. Fill either from your password manager.
@@ -30,13 +34,16 @@ Let your browser agent sign in to websites, 2FA included, without your password,
 
 It is one Node script with no dependencies, packaged as an [Agent Skill](https://agentskills.io) for Claude Code, Codex and other skill-aware agents.
 
-## 🚀 Install
+## Install
 
 Paste the prompt for your setup into your agent: Claude Code, Codex or another one with a shell. It installs everything, then runs a test sign-in with you on a public test site.
 
-### 🖥️ Agent in your own Chrome
+### Agent in your own Chrome
 
 For an agent on your computer that browses in your everyday Chrome, such as Claude Code with Claude in Chrome. It adds a small companion extension.
+
+<details>
+<summary><b>Copy the install prompt</b></summary>
 
 ```text
 Install agent-signin from https://github.com/bggoranoff/agent-signin, so you can sign in to websites in my own Chrome without ever seeing my passwords or codes.
@@ -49,9 +56,14 @@ Install agent-signin from https://github.com/bggoranoff/agent-signin, so you can
 6. Test it with me. Open https://the-internet.herokuapp.com/login in my own everyday Chrome, not in a separate browser of yours. Use your Claude in Chrome tool if you have one, or else `open -a "Google Chrome" <url>` on a Mac or `google-chrome <url>` on Linux, with my browser's name if it is another one. Tell me a sign-in window is opening, and that the site's public test login is tomsmith / SuperSecretPassword!. Run `node ~/.agent-signin/skills/agent-signin/signin.mjs ask --cdp extension --tab the-internet.herokuapp.com`, and show me the `url` it prints in case no window shows up. Then run `node ~/.agent-signin/skills/agent-signin/signin.mjs wait <id>` with a 10-minute timeout. Its last line must have `"status":"filled"`, and the page must then say "You logged into a secure area!". Tell me whether it worked, and if the status is anything else, the `reason` it gives.
 ```
 
-### ☁️ Agent on a server
+</details>
+
+### Agent on a server
 
 For an agent that runs elsewhere and browses in a Chromium with a DevTools port, while you answer from your phone or laptop.
+
+<details>
+<summary><b>Copy the install prompt</b></summary>
 
 ```text
 Install agent-signin from https://github.com/bggoranoff/agent-signin on this machine, so you can sign in to websites in your browser with logins I enter on my phone, without ever seeing them.
@@ -64,6 +76,8 @@ Install agent-signin from https://github.com/bggoranoff/agent-signin on this mac
 6. Test it with me. Open https://the-internet.herokuapp.com/login in your browser. Run `node ~/agent-signin/skills/agent-signin/signin.mjs ask --tab the-internet.herokuapp.com`, adding `--tunnel` unless SIGNIN_PUBLIC_URL is set. Send me the `url` it prints, and tell me the site's public test login is tomsmith / SuperSecretPassword!. Then run `node ~/agent-signin/skills/agent-signin/signin.mjs wait <id>` with a 10-minute timeout. Its last line must have `"status":"filled"`, and the page must then say "You logged into a secure area!". Tell me whether it worked, and if the status is anything else, the `reason` it gives.
 ```
 
+</details>
+
 To install by hand:
 
 1. Clone the repo and link `skills/agent-signin` into your agent's skills folder.
@@ -71,7 +85,7 @@ To install by hand:
 
 Otherwise the skill uses the browser your agent already drives, such as Playwright MCP or Browser Use. If that browser's DevTools port is not 9222, set `CDP_URL`.
 
-## 🧰 Use
+## Use
 
 The agent learns this from `SKILL.md` and runs it itself:
 
@@ -95,7 +109,7 @@ The last line says `filled`, `failed`, `cancelled` or `expired`, and the exit co
 
 `ask` asks for exactly the boxes the page shows, labelled in the site's own words, and pins them. If one is gone or has been swapped by the time you answer, nothing is typed. A site that asks for the email first gets one ask per page.
 
-### 📱 Where you answer
+### Where you answer
 
 | Flag | The link |
 |---|---|
@@ -119,7 +133,7 @@ box.example.com {
 
 `SIGNIN_PUBLIC_URL` sets `--public` for every call. Setting `$BROWSER` replaces the window with the page, opened in that browser.
 
-## 🔒 Security
+## Security
 
 - **The agent never receives a value.** The window and the page hand what you enter to the script's own process. That process types it, holds it for one fill and exits. Nothing it prints or writes contains a value.
 - **Values go only into the boxes it asked for.** The boxes, their frame and its origin are pinned when `ask` runs. The origin check and the typing run in one evaluation in an isolated world, so neither a navigation nor the page's scripts can land between them. A password goes only into a box that still hides it.
@@ -133,7 +147,7 @@ What it does not protect against:
 - **Phishing.** The window names the site's real origin. Read it before you fill.
 - **Other programs on your computer, with the extension.** While Chrome runs, any program running as you can ask the extension to find and fill login boxes, or open a link, in your tabs. That is all it takes: it never runs other code in a page, and it never returns page content or cookies.
 
-## 🧪 Test
+## Test
 
 ```sh
 npm test
@@ -143,6 +157,6 @@ This runs every kind of login against local fixtures, in a headless Chrome (`$CH
 
 If agent-signin keeps a password out of your agent's context, a ⭐ helps others find it.
 
-## 📄 License
+## License
 
 MIT
