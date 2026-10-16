@@ -44,7 +44,12 @@ Install agent-signin from https://github.com/bggoranoff/agent-signin on this mac
 6. Test it with me. Open https://the-internet.herokuapp.com/login in your browser. Run `node ~/agent-signin/skills/agent-signin/signin.mjs ask --tab the-internet.herokuapp.com`, adding `--tunnel` unless SIGNIN_PUBLIC_URL is set. Send me the `url` it prints, and tell me the site's public test login is tomsmith / SuperSecretPassword!. Then run `node ~/agent-signin/skills/agent-signin/signin.mjs wait <id>` with a 10-minute timeout. Its last line must have `"status":"filled"`, and the page must then say "You logged into a secure area!". Tell me whether it worked, and if the status is anything else, the `reason` it gives.
 ```
 
-To install by hand instead, clone the repo and link `skills/agent-signin` into your agent's skills folder. In your own Chrome, also run `signin.mjs install` and load `skills/agent-signin/extension` unpacked. Elsewhere, the skill works with whatever browser your agent already drives over the DevTools Protocol, such as Playwright MCP, Chrome DevTools MCP or Browser Use. Set `CDP_URL` if its port is not `127.0.0.1:9222`.
+To install by hand:
+
+1. Clone the repo and link `skills/agent-signin` into your agent's skills folder.
+2. For your own Chrome, run `signin.mjs install`, then load `skills/agent-signin/extension` with Load unpacked in `chrome://extensions`.
+
+Otherwise the skill uses the browser your agent already drives, such as Playwright MCP or Browser Use. If that browser's DevTools port is not 9222, set `CDP_URL`.
 
 ## Use
 
