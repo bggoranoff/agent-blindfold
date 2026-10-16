@@ -132,7 +132,7 @@ before(async () => {
   const extensions = EXTENSION ? install() : [];
   // Port 0 and a fresh profile: never the user's own browser on 9222.
   chrome = spawn(CHROME, ["--headless=new", "--use-mock-keychain", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run",
-    "--no-default-browser-check", ...extensions, "about:blank"], { stdio: "ignore" });
+    "--no-default-browser-check", ...extensions, "about:blank"], { stdio: "ignore", detached: true });
   const portFile = join(profile, "DevToolsActivePort");
   for (const deadline = Date.now() + 15000; !existsSync(portFile); await sleep(100)) {
     if (Date.now() > deadline || chrome.exitCode !== null) throw new Error("Chrome did not start.");
@@ -147,7 +147,8 @@ before(async () => {
 
 after(async () => {
   const exited = chrome?.exitCode === null && new Promise((resolve) => chrome.once("exit", resolve));
-  chrome?.kill();
+  // Kill the whole group: on Linux, Chrome's network service still writes to the profile after the browser exits.
+  if (exited) process.kill(-chrome.pid, "SIGKILL");
   await exited;
   site?.server.close();
   other?.server.close();
