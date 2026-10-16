@@ -307,9 +307,11 @@ function extension(request) {
   return new Promise((resolve, reject) => {
     const socket = createConnection(EXTENSION);
     socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
-    socket.on("error", () => reject(new Error("No agent-signin extension answers in Chrome. Install it as the README says.")));
     socket.on("close", () => reject(new Error("The browser stopped answering.")));
-    createInterface({ input: socket }).once("line", (line) => {
+    // The line reader passes the socket's errors on, and an error nobody hears crashes the process.
+    createInterface({ input: socket }).on("error", () => {
+      reject(new Error("No agent-signin extension answers in Chrome. Install it as the README says."));
+    }).once("line", (line) => {
       resolve(JSON.parse(line));
       socket.end();
     });
