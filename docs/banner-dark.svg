@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="300" viewBox="0 0 1280 300" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#141312"/><stop offset="1" stop-color="#2c2721"/></linearGradient>
+    <linearGradient id="icon" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d97757"/><stop offset="1" stop-color="#c2603f"/></linearGradient>
+  </defs>
+  <rect width="1280" height="300" rx="24" fill="url(#bg)"/>
+  <rect x="100" y="70" width="160" height="160" rx="36" fill="url(#icon)"/>
+  <path d="M150 140 v-18 a30 30 0 0 1 60 0 v18" fill="none" stroke="#1a1917" stroke-width="12" stroke-linecap="round"/>
+  <rect x="136" y="138" width="88" height="66" rx="12" fill="#1a1917"/>
+  <circle cx="180" cy="166" r="9" fill="url(#icon)"/>
+  <rect x="176" y="168" width="8" height="18" rx="4" fill="url(#icon)"/>
+  <text x="300" y="128" font-size="64" font-weight="700" fill="#f0eee6" letter-spacing="-1">agent-signin</text>
+  <text x="302" y="172" font-size="26" fill="#a3a19a">Your agent signs in. It never sees the password.</text>
+  <rect x="300" y="196" width="130" height="36" rx="18" fill="#2a2926" stroke="#3d3a35"/><text x="365" y="220" text-anchor="middle" font-size="17" fill="#d8d5cd">Claude Code</text><rect x="442.2" y="196" width="69" height="36" rx="18" fill="#2a2926" stroke="#3d3a35"/><text x="477" y="220" text-anchor="middle" font-size="17" fill="#d8d5cd">Codex</text><rect x="523.2" y="196" width="171" height="36" rx="18" fill="#2a2926" stroke="#3d3a35"/><text x="609" y="220" text-anchor="middle" font-size="17" fill="#d8d5cd">Your own Chrome</text><rect x="706.2" y="196" width="222" height="36" rx="18" fill="#2a2926" stroke="#3d3a35"/><text x="817" y="220" text-anchor="middle" font-size="17" fill="#d8d5cd">Any DevTools browser</text><rect x="940.2" y="196" width="181" height="36" rx="18" fill="#2a2926" stroke="#3d3a35"/><text x="1031" y="220" text-anchor="middle" font-size="17" fill="#d8d5cd">Phone or desktop</text>
+</svg>
