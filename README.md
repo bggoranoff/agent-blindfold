@@ -2,9 +2,9 @@
 
 Let a browser agent sign in to websites without your password, 2FA code or sign-in link ever passing through it.
 
-![An agent hits a login and a 2FA code, asks the user for each, and signs in without seeing either](docs/demo.gif)
+![A remote agent sends a one-time link to the user's phone, where they sign in and enter the 2FA code](docs/demo-phone.gif)
 
-<sub>A fake site in headless browsers. The agent's lines are scripted; the commands and their output are real. [MP4](docs/demo.mp4)</sub>
+<sub>A fake site, with the agent and its browser standing in for a server and an emulated iPhone-size browser for the phone. The links are real Cloudflare quick tunnels, with their start-up sped up 4×. The agent's lines are scripted; the commands and their output are real. [MP4](docs/demo-phone.mp4)</sub>
 
 When the agent hits a login, it runs one command. You get a one-time link, plus a small window if you are at the Mac the agent runs on. Fill either from your password manager. The script types your answer into the agent's browser tab itself, on the site the window names, and submits. The agent only learns which fields were filled.
 
@@ -80,9 +80,9 @@ The last line says `filled`, `failed`, `cancelled` or `expired`, and the exit co
 
 On macOS a window also opens on the Mac the script runs on, whatever the flag. Elsewhere, with no flag, the link opens in your default browser. The first answer wins: answering the window kills the link, and answering the link closes the window.
 
-![A remote agent sends a one-time link to the user's phone, where they sign in and enter the 2FA code](docs/demo-phone.gif)
+![An agent hits a login and a 2FA code, asks the user for each in a browser tab, and signs in without seeing either](docs/demo.gif)
 
-<sub>The agent and its browser stand in for a server, and the phone is an emulated iPhone-size browser. The links are real Cloudflare quick tunnels, with their start-up sped up 4×. [MP4](docs/demo-phone.mp4)</sub>
+<sub>The agent and you on the same machine, with the one-time page in your browser. A fake site in headless browsers; the agent's lines are scripted, the commands and their output real. [MP4](docs/demo.mp4)</sub>
 
 A quick tunnel is decrypted on Cloudflare's servers, so use `--public` for real passwords sent through the link. With Caddy, for example:
 
